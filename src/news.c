@@ -93,6 +93,40 @@ static int has_word(const char *s, const char *w) {   /* case-insensitive substr
     return 0;
 }
 
+static const char *clean_title_start(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    while (*s == '[' || *s == '(') {
+        const char *close = (*s == '[') ? strchr(s, ']') : strchr(s, ')');
+        if (!close) break;
+        s = close + 1;
+        while (*s == ' ' || *s == '\t' || *s == '-' || *s == ':') s++;
+    }
+    return s;
+}
+
+static int title_similar(const char *a, const char *b) {
+    if (!strcasecmp(a, b)) return 1;
+    const char *ca = clean_title_start(a);
+    const char *cb = clean_title_start(b);
+    if (!strcasecmp(ca, cb)) return 1;
+    char na[160], nb[160];
+    int oa = 0, ob = 0;
+    for (; *ca && oa < 159; ca++) {
+        if ((*ca >= 'a' && *ca <= 'z') || (*ca >= '0' && *ca <= '9')) na[oa++] = *ca;
+        else if (*ca >= 'A' && *ca <= 'Z') na[oa++] = *ca + ('a' - 'A');
+    }
+    na[oa] = 0;
+    for (; *cb && ob < 159; cb++) {
+        if ((*cb >= 'a' && *cb <= 'z') || (*cb >= '0' && *cb <= '9')) nb[ob++] = *cb;
+        else if (*cb >= 'A' && *cb <= 'Z') nb[ob++] = *cb + ('a' - 'A');
+    }
+    nb[ob] = 0;
+    if (oa && !strcmp(na, nb)) return 1;
+    int min_o = oa < ob ? oa : ob;
+    if (min_o >= 14 && !strncmp(na, nb, min_o)) return 1;
+    return 0;
+}
+
 static int boring(const char *title) {               /* threads, rules, meta */
     static const char *const words[] = {"questions thread", "rules", "weekly", "megathread", "moderator"};
     for (int k = 0; k < 5; ++k) if (has_word(title, words[k])) return 1;
@@ -115,10 +149,26 @@ static void parse(void) {
     for (char *e = strstr(t, "<entry>"); e && k < MAX_NEWS; e = strstr(e + 7, "<entry>")) {
         char *end = strstr(e, "</entry>");
         if (!end) break;
+        char temp_title[160];
+        grab(e, end, "title", temp_title, sizeof(temp_title));
+        if (boring(temp_title)) continue;
+        char temp_id[64];
+        grab(e, end, "id", temp_id, sizeof(temp_id));
+        int dup = 0;
+        for (int j = 0; j < k; ++j) {
+            if ((temp_id[0] && !strcmp(got[j].id, temp_id)) ||
+                (temp_title[0] && title_similar(got[j].title, temp_title))) {
+                dup = 1;
+                break;
+            }
+        }
+        if (dup) continue;
+
         NewsItem *it = &got[k];
         memset(it, 0, sizeof(*it));
-        grab(e, end, "title", it->title, sizeof(it->title));
-        if (boring(it->title)) continue;
+        snprintf(it->title, sizeof(it->title), "%s", temp_title);
+        snprintf(it->id, sizeof(it->id), "%s", temp_id);
+
         char upd[40];
         grab(e, end, "updated", upd, sizeof(upd));
         unsigned long long when = iso_s(upd);
@@ -129,7 +179,6 @@ static void parse(void) {
         char *tail = strstr(it->summary, "submitted by");   /* Reddit's footer: by, [link], [comments] */
         if (tail) *tail = 0;
         for (int L = strlen(it->summary); L && it->summary[L - 1] == ' '; --L) it->summary[L - 1] = 0;
-        grab(e, end, "id", it->id, sizeof(it->id));
         const char *th = strstr(e, "<media:thumbnail url=\"");   /* the post's picture, if it has one */
         if (th && th < end) {
             th += 22;

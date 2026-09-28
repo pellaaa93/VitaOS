@@ -222,6 +222,14 @@ static void add_news(void) {
     static char ago[MAX_NEWS_TILES][32], by[MAX_NEWS_TILES][64], kicker[MAX_NEWS_TILES][64];
     for (int i = 0; i < news_count() && i < MAX_NEWS_TILES && nitems < MAX_ITEMS; ++i) {
         const NewsItem *n = news_get(i);
+        if (!n || !n->title[0]) continue;
+        int already = 0;
+        for (int j = 0; j < nitems; ++j) {
+            if (items[j].kind == K_NEWS && !strcasecmp(items[j].title, n->title)) {
+                already = 1; break;
+            }
+        }
+        if (already) continue;
         unsigned int a = n->age_s;
         if (a < 3600) snprintf(ago[i], sizeof(ago[i]), "%u min ago", a / 60 ? a / 60 : 1);
         else if (a < 86400) snprintf(ago[i], sizeof(ago[i]), "%u h ago", a / 3600);
@@ -298,6 +306,7 @@ static int nshown;
  * playing, so keying it by title moved it to the end on every new album. */
 static void item_key(const Item *it, char *out) {
     if (it->kind == K_MOVIE || it->kind == K_MUSIC || it->kind == K_WEEK) snprintf(out, KEY_LEN, "%d", it->kind);
+    else if (it->kind == K_NEWS) snprintf(out, KEY_LEN, "%d|%d|%s", it->kind, it->index, it->title ? it->title : "");
     else snprintf(out, KEY_LEN, "%d|%s", it->kind, it->title ? it->title : "");
 }
 
@@ -468,13 +477,14 @@ static void draw_weather_glyph(float cx, float cy, int kind, float scale, int an
                                  cx + cosf(ang) * r2 + 0.5f, cy + sinf(ang) * r2 + 0.5f, RGBA8(250, 204, 21, 255));
             }
         } else {
-            /* Centered cloud with shaded puff structure */
+            /* Centered cloud with seamless integrated puff structure */
             float cl_y = (kind == 1) ? cy : (cy - 3.5f * scale);
-            vita2d_draw_fill_circle(cx - 7.5f * scale, cl_y + 1.5f * scale, 7.5f * scale, RGBA8(180, 195, 215, 255));
-            vita2d_draw_fill_circle(cx + 0.0f * scale, cl_y - 2.0f * scale, 9.5f * scale, RGBA8(215, 226, 240, 255));
-            vita2d_draw_fill_circle(cx + 7.5f * scale, cl_y + 2.0f * scale, 6.5f * scale, RGBA8(195, 208, 225, 255));
-            vita2d_draw_rectangle(cx - 7.5f * scale, cl_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, RGBA8(200, 212, 230, 255));
-            vita2d_draw_fill_circle(cx - 1.0f * scale, cl_y - 3.0f * scale, 6.0f * scale, RGBA8(240, 246, 255, 220));
+            unsigned int cloud_col = RGBA8(220, 230, 242, 255);
+            vita2d_draw_fill_circle(cx - 7.5f * scale, cl_y + 1.5f * scale, 7.5f * scale, cloud_col);
+            vita2d_draw_fill_circle(cx + 0.0f * scale, cl_y - 2.0f * scale, 9.5f * scale, cloud_col);
+            vita2d_draw_fill_circle(cx + 7.5f * scale, cl_y + 2.0f * scale, 6.5f * scale, cloud_col);
+            vita2d_draw_rectangle(cx - 7.5f * scale, cl_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, cloud_col);
+            vita2d_draw_fill_circle(cx - 1.0f * scale, cl_y - 3.0f * scale, 6.0f * scale, RGBA8(255, 255, 255, 75));
 
             if (kind == 2) {
                 /* Rain: 3 clean slanted raindrops */
@@ -524,19 +534,20 @@ static void draw_weather_glyph(float cx, float cy, int kind, float scale, int an
         float cloud_x = cx + dx;
         float cloud_y = cl_base_y + dy;
 
-        /* Ambient subtle puff behind for depth */
+        /* Ambient subtle puff behind for depth - softened to integrate seamlessly */
         float bg_x = cx - 7.0f * scale - dx * 0.7f;
         float bg_y = cl_base_y - 4.5f * scale - dy * 0.4f;
-        vita2d_draw_fill_circle(bg_x, bg_y, 6.0f * scale, RGBA8(148, 163, 184, 150));
-        vita2d_draw_fill_circle(bg_x + 5.5f * scale, bg_y - 1.5f * scale, 5.0f * scale, RGBA8(148, 163, 184, 150));
+        vita2d_draw_fill_circle(bg_x, bg_y, 6.0f * scale, RGBA8(160, 180, 210, 40));
+        vita2d_draw_fill_circle(bg_x + 5.5f * scale, bg_y - 1.5f * scale, 5.0f * scale, RGBA8(160, 180, 210, 40));
 
-        /* Main floating cloud body */
-        vita2d_draw_fill_circle(cloud_x - 7.5f * scale, cloud_y + 1.5f * scale, 7.5f * scale, RGBA8(180, 195, 215, 255));
-        vita2d_draw_fill_circle(cloud_x + 0.0f * scale, cloud_y - 2.0f * scale, 9.5f * scale, RGBA8(218, 228, 242, 255));
-        vita2d_draw_fill_circle(cloud_x + 7.5f * scale, cloud_y + 2.0f * scale, 6.5f * scale, RGBA8(195, 208, 225, 255));
-        vita2d_draw_rectangle(cloud_x - 7.5f * scale, cloud_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, RGBA8(200, 212, 230, 255));
-        /* Top rim highlight */
-        vita2d_draw_fill_circle(cloud_x - 1.0f * scale, cloud_y - 3.0f * scale, 6.0f * scale, RGBA8(245, 250, 255, 230));
+        /* Main floating cloud body - unified color so puffs blend into a smooth seamless shape */
+        unsigned int cloud_col = RGBA8(220, 230, 242, 255);
+        vita2d_draw_fill_circle(cloud_x - 7.5f * scale, cloud_y + 1.5f * scale, 7.5f * scale, cloud_col);
+        vita2d_draw_fill_circle(cloud_x + 0.0f * scale, cloud_y - 2.0f * scale, 9.5f * scale, cloud_col);
+        vita2d_draw_fill_circle(cloud_x + 7.5f * scale, cloud_y + 2.0f * scale, 6.5f * scale, cloud_col);
+        vita2d_draw_rectangle(cloud_x - 7.5f * scale, cloud_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, cloud_col);
+        /* Subtle crest highlight */
+        vita2d_draw_fill_circle(cloud_x - 1.0f * scale, cloud_y - 3.0f * scale, 6.0f * scale, RGBA8(255, 255, 255, 75));
 
         if (kind == 2) {
             /* Rain: 4 smooth looping falling raindrops with natural staggered timing */
