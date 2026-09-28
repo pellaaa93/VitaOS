@@ -45,10 +45,11 @@ static float scroll_y = 0.0f, target_scroll_y = 0.0f;
 enum {
     F_BRIGHT, F_VOLUME, F_SFX, F_AMBIENT,
     F_BUBBLES, F_SLEEP, F_RESTART, F_POWEROFF,
-    F_STORAGE, F_THEME, F_CLOCK,
-    F_WEATHER, F_ABOUT, F_BLUETOOTH,
+    F_STORAGE, F_THEME, F_ABOUT,
+    F_BLUETOOTH, F_CLOCK, F_WEATHER,
     NFOCUS
 };
+
 static void (*release_ps)(void);
 void settings_on_release_ps(void (*fn)(void)) { release_ps = fn; }
 static void (*lib_rescan)(void), (*lib_art)(void);
@@ -377,13 +378,13 @@ void settings_update(const Input *in) {
         if (tx >= C1 && tx < C1 + 460 && ty >= R3) {
             if (ty >= R3 + 42 && ty < R3 + 84) { focus = F_STORAGE; act = 1; }
             else if (ty >= R3 + 84 && ty < R3 + 126) { focus = F_THEME; act = 1; }
-            else if (ty >= R3 + 126 && ty < R3 + 172) { focus = F_CLOCK; act = 1; }
+            else if (ty >= R3 + 126 && ty < R3 + 172) { focus = F_ABOUT; act = 1; }
         }
         /* Row 3 Right card: Services & System */
         if (tx >= 488 && tx < 488 + 460 && ty >= R3) {
-            if (ty >= R3 + 42 && ty < R3 + 84) { focus = F_WEATHER; act = 1; }
-            else if (ty >= R3 + 84 && ty < R3 + 126) { focus = F_ABOUT; act = 1; }
-            else if (ty >= R3 + 126 && ty < R3 + 172) { focus = F_BLUETOOTH; act = 1; }
+            if (ty >= R3 + 42 && ty < R3 + 84) { focus = F_BLUETOOTH; act = 1; }
+            else if (ty >= R3 + 84 && ty < R3 + 126) { focus = F_CLOCK; act = 1; }
+            else if (ty >= R3 + 126 && ty < R3 + 172) { focus = F_WEATHER; act = 1; }
         }
     }
 
@@ -395,10 +396,10 @@ void settings_update(const Input *in) {
         else if (focus >= F_BUBBLES && focus <= F_POWEROFF) focus = F_AMBIENT;
         else if (focus == F_STORAGE) focus = F_AMBIENT;
         else if (focus == F_THEME) focus = F_STORAGE;
-        else if (focus == F_CLOCK) focus = F_THEME;
-        else if (focus == F_WEATHER) focus = F_RESTART;
-        else if (focus == F_ABOUT) focus = F_WEATHER;
-        else if (focus == F_BLUETOOTH) focus = F_ABOUT;
+        else if (focus == F_ABOUT) focus = F_THEME;
+        else if (focus == F_BLUETOOTH) focus = F_RESTART;
+        else if (focus == F_CLOCK) focus = F_BLUETOOTH;
+        else if (focus == F_WEATHER) focus = F_CLOCK;
     }
     if (in->pressed & SCE_CTRL_DOWN) {
         if (focus == F_BRIGHT) focus = F_VOLUME;
@@ -406,20 +407,20 @@ void settings_update(const Input *in) {
         else if (focus == F_SFX) focus = F_AMBIENT;
         else if (focus == F_AMBIENT) focus = F_STORAGE;
         else if (focus >= F_BUBBLES && focus <= F_POWEROFF) {
-            if (focus >= F_RESTART) focus = F_WEATHER;
+            if (focus >= F_RESTART) focus = F_BLUETOOTH;
             else focus = F_STORAGE;
         }
         else if (focus == F_STORAGE) focus = F_THEME;
-        else if (focus == F_THEME) focus = F_CLOCK;
-        else if (focus == F_WEATHER) focus = F_ABOUT;
-        else if (focus == F_ABOUT) focus = F_BLUETOOTH;
+        else if (focus == F_THEME) focus = F_ABOUT;
+        else if (focus == F_BLUETOOTH) focus = F_CLOCK;
+        else if (focus == F_CLOCK) focus = F_WEATHER;
     }
     if (in->pressed & SCE_CTRL_LEFT) {
         if (focus >= F_BUBBLES + 1 && focus <= F_POWEROFF) focus--;
         else if (focus == F_BUBBLES) focus = F_AMBIENT;
-        else if (focus == F_WEATHER) focus = F_STORAGE;
-        else if (focus == F_ABOUT) focus = F_THEME;
-        else if (focus == F_BLUETOOTH) focus = F_CLOCK;
+        else if (focus == F_BLUETOOTH) focus = F_STORAGE;
+        else if (focus == F_CLOCK) focus = F_THEME;
+        else if (focus == F_WEATHER) focus = F_ABOUT;
         else if (focus == F_BRIGHT) set_brightness(brightness - (BRIGHT_MAX / 20));
         else if (focus == F_VOLUME) set_volume(volume - 1);
         else if (focus == F_SFX) { sfx_set_level(sfx_level() - 1); sfx_play(SFX_SELECT); }
@@ -427,9 +428,9 @@ void settings_update(const Input *in) {
     }
     if (in->pressed & SCE_CTRL_RIGHT) {
         if (focus >= F_BUBBLES && focus < F_POWEROFF) focus++;
-        else if (focus == F_STORAGE) focus = F_WEATHER;
-        else if (focus == F_THEME) focus = F_ABOUT;
-        else if (focus == F_CLOCK) focus = F_BLUETOOTH;
+        else if (focus == F_STORAGE) focus = F_BLUETOOTH;
+        else if (focus == F_THEME) focus = F_CLOCK;
+        else if (focus == F_ABOUT) focus = F_WEATHER;
         else if (focus == F_BRIGHT) set_brightness(brightness + (BRIGHT_MAX / 20));
         else if (focus == F_VOLUME) set_volume(volume + 1);
         else if (focus == F_SFX) { sfx_set_level(sfx_level() + 1); sfx_play(SFX_SELECT); }
@@ -586,27 +587,27 @@ void settings_update(const Input *in) {
 
     /* Left Card: Preferences & Storage */
     card(C1, y_r3, card_w, opt_h, "Preferences & Storage");
-    button_row(C1 + 20, y_r3 + 60, card_w - 40, "X Manage storage and clean up", "Inspect partitions and delete caches", focus == F_STORAGE);
+    button_row(C1 + 20, y_r3 + 60, card_w - 40, "Manage storage and clean up", "Inspect partitions and delete caches", focus == F_STORAGE);
 
     char th_sub[96];
     snprintf(th_sub, sizeof(th_sub), "Accent: %s  \xC2\xB7  Background: %s",
              ui_theme_accent_name(ui_theme_accent_index()), ui_theme_bg_name(ui_theme_bg()));
-    button_row(C1 + 20, y_r3 + 102, card_w - 40, "X Theme", th_sub, focus == F_THEME);
+    button_row(C1 + 20, y_r3 + 102, card_w - 40, "Theme", th_sub, focus == F_THEME);
 
-    char ck_sub[64];
-    snprintf(ck_sub, sizeof(ck_sub), "Current format: %s", ui_time_format_name(ui_time_format()));
-    button_row(C1 + 20, y_r3 + 144, card_w - 40, "X Clock format", ck_sub, focus == F_CLOCK);
+    button_row(C1 + 20, y_r3 + 144, card_w - 40, "VitaOS", "Games, box art, power-on boot, about", focus == F_ABOUT);
 
     /* Right Card: Services & System */
     card(488, y_r3, card_w, opt_h, "Services & System");
+    button_row(488 + 20, y_r3 + 60, card_w - 40, "Bluetooth devices", "Manage controller and audio pairing", focus == F_BLUETOOTH);
+
+    char ck_sub[64];
+    snprintf(ck_sub, sizeof(ck_sub), "Current format: %s", ui_time_format_name(ui_time_format()));
+    button_row(488 + 20, y_r3 + 102, card_w - 40, "Clock format", ck_sub, focus == F_CLOCK);
+
     const char *pl = weather_place();
     char wx_sub[96];
     snprintf(wx_sub, sizeof(wx_sub), "Location: %s", pl && *pl ? pl : "Off");
-    button_row(488 + 20, y_r3 + 60, card_w - 40, "X Weather", wx_sub, focus == F_WEATHER);
-
-    button_row(488 + 20, y_r3 + 102, card_w - 40, "X VitaOS", "Games, box art, power-on boot, about", focus == F_ABOUT);
-
-    button_row(488 + 20, y_r3 + 144, card_w - 40, "X Bluetooth devices", "Manage controller and audio pairing", focus == F_BLUETOOTH);
+    button_row(488 + 20, y_r3 + 144, card_w - 40, "Weather", wx_sub, focus == F_WEATHER);
 
     /* Scrollbar indicator on the right edge */
     float sb_h = 60.0f;

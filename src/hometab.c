@@ -375,16 +375,17 @@ const char *hometab_hint(void) {
         return n && store_match(n->title) >= 0 ? "X see it in the Store    \xE2\x86\x91 \xE2\x86\x93 scroll    O back"
                                                : "\xE2\x86\x91 \xE2\x86\x93 scroll    O back";
     }
-    if (focus_widget) return "X 4-day forecast    \xE2\x86\x93 back to tiles    O cancel";
+    if (focus_widget) return "X 4-day forecast    O cancel";
     if (!nitems) return "L R tabs";
     switch (items[sel].kind) {
-    case K_MOVIE: return "X resume   <- -> choose   \xE2\x86\x91 weather   L R tabs";
-    case K_MUSIC: return "X play / pause   <- -> choose   \xE2\x86\x91 weather   L R tabs";
-    case K_NEWS: return "X read   <- -> choose   \xE2\x86\x91 weather   L R tabs";
-    case K_WEEK: return "<- -> choose   \xE2\x86\x91 weather   L R tabs";
-    default: return "X play   <- -> choose   \xE2\x86\x91 weather   L R tabs";
+    case K_MOVIE: return "X resume   <- -> choose   L R tabs";
+    case K_MUSIC: return "X play / pause   <- -> choose   L R tabs";
+    case K_NEWS: return "X read   <- -> choose   L R tabs";
+    case K_WEEK: return "<- -> choose   L R tabs";
+    default: return "X play   <- -> choose   L R tabs";
     }
 }
+
 
 
 /* The news reader: a full page for one post (asked for 2026-09-26: the old
@@ -503,12 +504,14 @@ static void weather_modal_draw(const Input *in) {
     draw_round_ring(px, py, pw, ph, pr, 1.5f, RGBA8(255, 255, 255, 30));
 
     /* Header */
-    text(bold, (int)px + 28, (int)py + 26, C_ACCENT, 13, "WEATHER & 4-DAY FORECAST");
+    text(bold, (int)px + 28, (int)py + 26, C_ACCENT, 13, "4-DAY FORECAST");
     text(bold, (int)px + 28, (int)py + 54, C_TEXT, 22, town[0] ? town : "Local Weather");
 
     /* Close hint button */
     draw_round_rect(px + pw - 94, py + 18, 70, 26, 13, RGBA8(255, 255, 255, 20));
-    text(font, (int)px + (int)pw - 82, (int)py + 36, C_DIM, 13, "O Close");
+    int cw = text_w(font, 13, "Close");
+    text(font, (int)px + (int)pw - 94 + (70 - cw) / 2, (int)py + 36, C_DIM, 13, "Close");
+
 
     /* Top separator */
     vita2d_draw_rectangle((int)px + 24, (int)py + 66, (int)pw - 48, 1, RGBA8(255, 255, 255, 24));
