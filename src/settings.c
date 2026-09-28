@@ -41,7 +41,7 @@ static volatile SceUInt64 wanted_until;     /* the tab is on screen: keep the nu
 static int brightness = -1, volume = -1, focus;
 static SceUInt64 last;
 
-enum { F_BRIGHT, F_VOLUME, F_SFX, F_AMBIENT, F_STORAGE, F_WEATHER, F_BLUETOOTH, F_ABOUT, F_THEME, F_BUBBLES, F_SLEEP, F_RESTART, F_POWEROFF, NFOCUS };
+enum { F_BRIGHT, F_VOLUME, F_SFX, F_AMBIENT, F_STORAGE, F_WEATHER, F_BLUETOOTH, F_ABOUT, F_THEME, F_CLOCK, F_BUBBLES, F_SLEEP, F_RESTART, F_POWEROFF, NFOCUS };
 static void (*release_ps)(void);
 void settings_on_release_ps(void (*fn)(void)) { release_ps = fn; }
 static void (*lib_rescan)(void), (*lib_art)(void);
@@ -338,10 +338,24 @@ void settings_update(const Input *in) {
     /* The four system buttons sit in a row: left/right moves along it, up
      * leaves it; everywhere else up/down steps through the rows. */
     int sysrow = focus >= F_BUBBLES;
-    if (in->pressed & SCE_CTRL_UP) focus = sysrow ? F_THEME : (focus + NFOCUS - 1) % NFOCUS;   /* Theme sits just above the system row */
-    if (in->pressed & SCE_CTRL_DOWN) focus = sysrow ? focus : focus + 1;
+    if (in->pressed & SCE_CTRL_UP) {
+        if (sysrow) focus = (focus >= F_RESTART) ? F_CLOCK : F_THEME;
+        else if (focus == F_THEME || focus == F_CLOCK) focus = F_ABOUT;
+        else focus = (focus + NFOCUS - 1) % NFOCUS;
+    }
+    if (in->pressed & SCE_CTRL_DOWN) {
+        if (sysrow) { /* remain on sysrow */ }
+        else if (focus == F_ABOUT) focus = F_THEME;
+        else if (focus == F_THEME) focus = F_BUBBLES;
+        else if (focus == F_CLOCK) focus = F_RESTART;
+        else focus = focus + 1;
+    }
     if (sysrow && (in->pressed & SCE_CTRL_LEFT) && focus > F_BUBBLES) focus--;
     if (sysrow && (in->pressed & SCE_CTRL_RIGHT) && focus < F_POWEROFF) focus++;
+    if (!sysrow) {
+        if (focus == F_THEME && (in->pressed & SCE_CTRL_RIGHT)) focus = F_CLOCK;
+        else if (focus == F_CLOCK && (in->pressed & SCE_CTRL_LEFT)) focus = F_THEME;
+    }
     int dir = sysrow ? 0 : (in->pressed & SCE_CTRL_RIGHT) ? 1 : (in->pressed & SCE_CTRL_LEFT) ? -1 : 0;
     if (dir && focus == F_BRIGHT) set_brightness(brightness + dir * (BRIGHT_MAX / 20));
     if (dir && focus == F_VOLUME) set_volume(volume + dir);
@@ -352,16 +366,21 @@ void settings_update(const Input *in) {
         if (focus == F_BUBBLES && release_ps) release_ps();
         if (focus == F_WEATHER) weather_pick();
         if (focus == F_THEME) theme_pick();
-        static char get_label[40], boot_label[48];
+        if (focus == F_CLOCK) {
+            ui_set_time_format(ui_time_format() == UI_TIME_12H ? UI_TIME_24H : UI_TIME_12H);
+            ui_toast(ui_time_format() == UI_TIME_24H ? "Clock: 24-hour" : "Clock: 12-hour (AM/PM)", C_ACCENT);
+        }
+        static char get_label[40], boot_label[48], clock_label[48];
         /* Start at boot: the PS plugin (1.3) opens VitaOS after power-on
          * unless user/boot.off is there (asked for 2026-09-27). */
         SceIoStat bst;
         int boot_on = sceIoGetstat("ux0:data/arcadehub/user/boot.off", &bst) < 0;
         snprintf(boot_label, sizeof(boot_label), "Start at boot: %s", boot_on ? "On" : "Off");
-        const char *vitaos_items[5] = {"Find games again", "Download box art", "About VitaOS", boot_label, get_label};
+        snprintf(clock_label, sizeof(clock_label), "Time format: %s", ui_time_format_name(ui_time_format()));
+        const char *vitaos_items[6] = {"Find games again", "Download box art", "About VitaOS", boot_label, clock_label, get_label};
         const char *newer = update_newer();
         if (newer) snprintf(get_label, sizeof(get_label), "Get VitaOS %s", newer);
-        int pick = focus == F_ABOUT ? ui_menu("VitaOS", (const char *const *)vitaos_items, newer ? 5 : 4) : -1;
+        int pick = focus == F_ABOUT ? ui_menu("VitaOS", (const char *const *)vitaos_items, newer ? 6 : 5) : -1;
         if (pick == 3) {
             if (boot_on) {
                 SceUID bf = sceIoOpen("ux0:data/arcadehub/user/boot.off", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
@@ -372,7 +391,11 @@ void settings_update(const Input *in) {
                 ui_toast("VitaOS opens at power-on (needs the PS plugin)", C_OK);
             }
         }
-        if (pick == 4) update_get();
+        if (pick == 4) {
+            ui_set_time_format(ui_time_format() == UI_TIME_12H ? UI_TIME_24H : UI_TIME_12H);
+            ui_toast(ui_time_format() == UI_TIME_24H ? "Clock: 24-hour" : "Clock: 12-hour (AM/PM)", C_ACCENT);
+        }
+        if (pick == 5) update_get();
         if (pick == 0 && lib_rescan) lib_rescan();
         if (pick == 1 && lib_art) lib_art();
         if (pick == 2)
@@ -483,14 +506,28 @@ void settings_update(const Input *in) {
                      : focus == F_RESTART ? "Back in about a minute" : focus == F_POWEROFF ? "Hold power to turn it back on" : "";
     text_fit(font, C3 + 18, R2 + CH - 14, C_FAINT, 13, what, CW - 36);
 
-    /* A slim full-width row for Theme, in the gap below the two card rows. */
+    /* Slim rows for Theme and Clock, in the gap below the two card rows. */
     {
-        char t[160];
-        snprintf(t, sizeof(t), "X Theme: %s accent, %s background",
-                 ui_theme_accent_name(ui_theme_accent_index()), ui_theme_bg_name(ui_theme_bg()));
         int ty = R2 + CH + 6;
-        if (in->tapped && in->tap_x >= C1 && in->tap_x < C3 + CW && in->tap_y >= ty && in->tap_y < ty + 28) focus = F_THEME;
-        if (focus == F_THEME) vita2d_draw_rectangle(C1 + 2, ty, C3 + CW - C1 - 4, 28, C_SEL);
-        draw_hints(C1 + 18, ty + 14, t, focus == F_THEME ? C_TEXT : C_DIM, C3 + CW - 20);
+        int theme_w = C2 + CW - C1 - 10;
+        int clock_x = C3;
+        int clock_w = CW;
+
+        char t[160];
+        snprintf(t, sizeof(t), "X Theme: %s, %s",
+                 ui_theme_accent_name(ui_theme_accent_index()), ui_theme_bg_name(ui_theme_bg()));
+        if (in->tapped && in->tap_x >= C1 && in->tap_x < C1 + theme_w && in->tap_y >= ty && in->tap_y < ty + 28) focus = F_THEME;
+        if (focus == F_THEME) vita2d_draw_rectangle(C1 + 2, ty, theme_w, 28, C_SEL);
+        draw_hints(C1 + 18, ty + 14, t, focus == F_THEME ? C_TEXT : C_DIM, C1 + theme_w - 10);
+
+        char c[64];
+        snprintf(c, sizeof(c), "X Clock: %s", ui_time_format_name(ui_time_format()));
+        if (in->tapped && in->tap_x >= clock_x && in->tap_x < clock_x + clock_w && in->tap_y >= ty && in->tap_y < ty + 28) {
+            focus = F_CLOCK;
+            ui_set_time_format(ui_time_format() == UI_TIME_12H ? UI_TIME_24H : UI_TIME_12H);
+            ui_toast(ui_time_format() == UI_TIME_24H ? "Clock: 24-hour" : "Clock: 12-hour (AM/PM)", C_ACCENT);
+        }
+        if (focus == F_CLOCK) vita2d_draw_rectangle(clock_x, ty, clock_w, 28, C_SEL);
+        draw_hints(clock_x + 14, ty + 14, c, focus == F_CLOCK ? C_TEXT : C_DIM, clock_x + clock_w - 10);
     }
 }

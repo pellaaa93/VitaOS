@@ -537,6 +537,8 @@ static int boot_video(void) {
 }
 
 int main(void) {
+    sceIoMkdir("ux0:data/arcadehub", 0777);
+    sceIoMkdir("ux0:data/arcadehub/user", 0777);
     ssl_threads_init();                      /* before any thread: OpenSSL 1.0.2 needs its locks (ssl_locks.c) */
     vita2d_init_advanced(4 * 1024 * 1024);   /* the per-frame vertex pool: the new visuals need more than 1 MB */
     vita2d_set_clear_color(C_BG);

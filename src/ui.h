@@ -131,6 +131,13 @@ const char *ui_theme_bg_name(ThemeBg bg);
 const char *ui_theme_wallpaper(void);       /* the chosen file's name, or "" */
 void ui_theme_load(void);                   /* theme.cfg -> the state above; called once, from ui_init */
 
+/* Clock format: 12-hour (AM/PM) or 24-hour. */
+typedef enum { UI_TIME_12H, UI_TIME_24H } UiTimeFormat;
+UiTimeFormat ui_time_format(void);
+void ui_set_time_format(UiTimeFormat fmt);
+const char *ui_time_format_name(UiTimeFormat fmt);
+void ui_time_format_load(void);
+
 /* A notice in the top-right corner for a few seconds; safe from any thread. */
 void ui_toast(const char *text, unsigned int color);
 void ui_draw_toasts(void);

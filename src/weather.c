@@ -7,35 +7,46 @@
 #include <curl/curl.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/io/fcntl.h>
+#include <psp2/io/stat.h>
 
 #include "weather.h"
 
 #define CFG "ux0:data/arcadehub/user/weather.cfg"
-#define URL "https://api.open-meteo.com/v1/forecast?latitude=%.3f&longitude=%.3f" \
+#define URL "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f" \
             "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min" \
             "&temperature_unit=%s&timezone=auto&forecast_days=1"
 
 static char place[64];
 static volatile int stale;                            /* the town changed: fetch now */
+static SceUID weather_sema = -1;
 
 /* The town, from user/weather.cfg; 0 when none is set. */
 static int read_cfg(float *lat, float *lon, int *fahrenheit) {
     char b[160] = {0};
     SceUID fd = sceIoOpen(CFG, SCE_O_RDONLY, 0);
     if (fd < 0) return 0;
-    sceIoRead(fd, b, sizeof(b) - 1);
+    int rd = sceIoRead(fd, b, sizeof(b) - 1);
     sceIoClose(fd);
-    char unit = 'F';
-    int n = 0;
-    if (sscanf(b, "%f %f %c %n", lat, lon, &unit, &n) < 3) return 0;
-    *fahrenheit = unit != 'C';
-    snprintf(place, sizeof(place), "%s", b + n);
+    if (rd <= 0) return 0;
+    b[rd] = 0;
+
+    char unit = 'C';
+    char town[64] = {0};
+    float t_lat = 0, t_lon = 0;
+    if (sscanf(b, "%f %f %c %63[^\r\n]", &t_lat, &t_lon, &unit, town) < 4) return 0;
+    *lat = t_lat;
+    *lon = t_lon;
+    *fahrenheit = (unit == 'F');
+
+    char *p = town;
+    while (*p == ' ' || *p == '\t') p++;
+    snprintf(place, sizeof(place), "%s", p);
     for (char *q = place; *q; ++q) if (*q == '\n' || *q == '\r') *q = 0;
     return 1;
 }
 
 static volatile int ready, temp, hi, lo, code;
-static char body[2048];
+static char body[16384];
 static int used;
 
 static size_t on_data(char *p, size_t s, size_t n, void *u) {
@@ -50,24 +61,32 @@ static size_t on_data(char *p, size_t s, size_t n, void *u) {
 
 /* The number after "key": inside the object that starts at 'section'. */
 static float number_after(const char *section, const char *key) {
-    const char *s = strstr(body, section);
-    if (!s) return -999;
+    const char *s = body;
+    if (section && *section) {
+        s = strstr(body, section);
+        if (!s) return -999;
+        const char *brace = strchr(s, '{');
+        if (brace) s = brace;
+    }
     const char *k = strstr(s, key);
     if (!k) return -999;
     k = strchr(k, ':');
-    while (k && (*k == ':' || *k == '[' || *k == ' ')) ++k;
-    return k ? strtof(k, NULL) : -999;
+    if (!k) return -999;
+    while (*k == ':' || *k == '[' || *k == ' ' || *k == '\t') ++k;
+    return strtof(k, NULL);
 }
 
 static int worker(SceSize args, void *argp) {
     (void)args; (void)argp;
     for (;;) {
-        float lat, lon;
+        float lat = 0, lon = 0;
         int f = 1;
         stale = 0;
         if (!read_cfg(&lat, &lon, &f)) {                 /* no town yet: nothing to show */
             ready = 0;
-            for (int i = 0; i < 60 && !stale; ++i) sceKernelDelayThread(1000 * 1000);
+            SceUInt timeout = 60 * 1000 * 1000;
+            if (weather_sema >= 0) sceKernelWaitSemaCB(weather_sema, 1, &timeout);
+            else for (int i = 0; i < 60 && !stale; ++i) sceKernelDelayThread(1000 * 1000);
             continue;
         }
         char url[320];
@@ -81,24 +100,39 @@ static int worker(SceSize args, void *argp) {
             curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
             curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_data);
             if (curl_easy_perform(c) == CURLE_OK) {
-                float t = number_after("\"current\":{", "\"temperature_2m\""), w = number_after("\"current\":{", "\"weather_code\"");
-                float h = number_after("\"daily\":{", "\"temperature_2m_max\""), l = number_after("\"daily\":{", "\"temperature_2m_min\"");
+                float t = number_after("\"current\"", "\"temperature_2m\"");
+                float w = number_after("\"current\"", "\"weather_code\"");
+                float h = number_after("\"daily\"", "\"temperature_2m_max\"");
+                float l = number_after("\"daily\"", "\"temperature_2m_min\"");
                 if (t > -200) {
-                    temp = (int)(t + (t < 0 ? -0.5f : 0.5f)); code = (int)w;
-                    hi = (int)(h + 0.5f); lo = (int)(l + 0.5f);
+                    temp = (int)(t + (t < 0 ? -0.5f : 0.5f));
+                    code = (w > -900) ? (int)w : 0;
+                    hi = (h > -200) ? (int)(h + 0.5f) : temp;
+                    lo = (l > -200) ? (int)(l + 0.5f) : temp;
                     ready = 1;
                 }
             }
             curl_easy_cleanup(c);
         }
-        int wait = ready ? 30 * 60 : 60;                 /* retry sooner if it failed */
-        for (int i = 0; i < wait && !stale; ++i) sceKernelDelayThread(1000 * 1000);
+        unsigned int wait_s = ready ? 30 * 60 : 60;       /* retry in 60s if failed, else 30 min */
+        SceUInt timeout = wait_s * 1000 * 1000;
+        if (weather_sema >= 0) sceKernelWaitSemaCB(weather_sema, 1, &timeout);
+        else for (unsigned int i = 0; i < wait_s && !stale; ++i) sceKernelDelayThread(1000 * 1000);
     }
     return 0;
 }
 
 void weather_init(void) {
-    SceUID t = sceKernelCreateThread("weather", worker, 0x10000100, 0x8000, 0, 0, NULL);
+    sceIoMkdir("ux0:data/arcadehub", 0777);
+    sceIoMkdir("ux0:data/arcadehub/user", 0777);
+
+    float lat = 0, lon = 0;
+    int f = 0;
+    read_cfg(&lat, &lon, &f);
+
+    if (weather_sema < 0) weather_sema = sceKernelCreateSema("weather_wake", 0, 0, 1, NULL);
+
+    SceUID t = sceKernelCreateThread("weather", worker, 0x10000100, 0x10000, 0, 0, NULL);
     if (t >= 0) sceKernelStartThread(t, 0, NULL);
 }
 
@@ -186,12 +220,29 @@ void weather_set(const char *name, float lat, float lon, int fahrenheit) {
     snprintf(shortname, sizeof(shortname), "%s", name);
     char *comma = strchr(shortname, ',');
     if (comma) *comma = 0;                            /* the widget shows the town only */
-    int n = snprintf(line, sizeof(line), "%.4f %.4f %c %s\n", lat, lon, fahrenheit ? 'F' : 'C', shortname);
+
+    /* Update place immediately so Settings and widgets reflect it right away */
+    char *p = shortname;
+    while (*p == ' ' || *p == '\t') p++;
+    snprintf(place, sizeof(place), "%s", p);
+
+    sceIoMkdir("ux0:data/arcadehub", 0777);
+    sceIoMkdir("ux0:data/arcadehub/user", 0777);
+
+    int n = snprintf(line, sizeof(line), "%.4f %.4f %c %s\n", lat, lon, fahrenheit ? 'F' : 'C', place);
     SceUID fd = sceIoOpen(CFG, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
     if (fd >= 0) { sceIoWrite(fd, line, n); sceIoClose(fd); }
+
     ready = 0;
     stale = 1;
+    if (weather_sema >= 0) sceKernelSignalSema(weather_sema, 1);
 }
 
-void weather_off(void) { sceIoRemove(CFG); ready = 0; stale = 1; }
+void weather_off(void) {
+    sceIoRemove(CFG);
+    place[0] = 0;
+    ready = 0;
+    stale = 1;
+    if (weather_sema >= 0) sceKernelSignalSema(weather_sema, 1);
+}
 const char *weather_place(void) { return place; }
