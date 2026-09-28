@@ -584,6 +584,24 @@ void ui_image_forget(const char *path) {
         }
 }
 
+void ui_image_forget_prefix(const char *prefix) {
+    if (!prefix || !*prefix) return;
+    int len = (int)strlen(prefix);
+    for (int i = 0; i < IMGS; ++i) {
+        if (!strncmp(imgs[i].path, prefix, len)) {
+            if (imgs[i].state == 1) {
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 3 || imgs[i].state == 4) {
+                if (imgs[i].tex && nfree < IMGS) to_free[nfree++] = imgs[i].tex;
+                imgs[i].tex = NULL;
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            }
+        }
+    }
+}
+
 static void free_evicted(void) {
     if (!nfree) return;
     vita2d_wait_rendering_done();

@@ -92,6 +92,7 @@ void ui_ambient(float strength);   /* PS5-style drifting glow, ribbons, motes */
  * (or if the file is missing). Cached; the least recently used are dropped. */
 vita2d_texture *ui_image(const char *path);
 void ui_image_forget(const char *path);
+void ui_image_forget_prefix(const char *prefix);
 int ui_image_pending(const char *path);
 void draw_shimmer(float x, float y, float w, float h);
 void draw_gradient(float x, float y, float w, float h, unsigned int tl, unsigned int tr, unsigned int bl, unsigned int br);

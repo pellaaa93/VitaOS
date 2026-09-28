@@ -367,6 +367,18 @@ static void backdrop(vita2d_texture *t, int alpha) {
 
 void hometab_reset(void) { sel = 0; anchor_kind = -1; nshown = 0; player_moved = 0; focus_widget = 0; weather_modal = 0; forecast_sel = 0; }
 
+void hometab_leave(void) {
+    ui_image_forget_prefix("ux0:data/arcadehub/news");
+    for (int i = 0; i < nitems; ++i) {
+        if (items[i].kind == K_NEWS) {
+            items[i].tile = NULL;
+            items[i].art = NULL;
+        }
+    }
+    back_prev = -1;
+    back_mix = 1;
+}
+
 int hometab_wants_tab(void) { int t = want_tab; want_tab = -1; return t; }
 
 const char *hometab_hint(void) {
@@ -441,21 +453,42 @@ static void news_reader(const Input *in) {
 }
 
 static void draw_weather_glyph(float cx, float cy, int kind, float scale, int anim) {
-    unsigned int gc = kind == 0 ? RGBA8(250, 204, 21, 255) : kind == 2 ? RGBA8(96, 165, 250, 255) : kind == 3 ? RGBA8(186, 230, 253, 255) : RGBA8(203, 213, 225, 255);
     if (!anim) {
         if (kind == 0) {
-            vita2d_draw_fill_circle(cx, cy, 10.0f * scale, gc);
+            /* Sun: centered core with 8 crisp rays */
+            vita2d_draw_fill_circle(cx, cy, 9.5f * scale, RGBA8(250, 204, 21, 255));
+            vita2d_draw_fill_circle(cx - 2.0f * scale, cy - 2.0f * scale, 4.5f * scale, RGBA8(254, 240, 138, 200));
+            for (int i = 0; i < 8; ++i) {
+                float ang = i * 0.785398f;
+                float r1 = 12.5f * scale;
+                float r2 = (i % 2 == 0 ? 17.5f : 15.5f) * scale;
+                vita2d_draw_line(cx + cosf(ang) * r1, cy + sinf(ang) * r1,
+                                 cx + cosf(ang) * r2, cy + sinf(ang) * r2, RGBA8(250, 204, 21, 255));
+                vita2d_draw_line(cx + cosf(ang) * r1 + 0.5f, cy + sinf(ang) * r1 + 0.5f,
+                                 cx + cosf(ang) * r2 + 0.5f, cy + sinf(ang) * r2 + 0.5f, RGBA8(250, 204, 21, 255));
+            }
         } else {
-            vita2d_draw_fill_circle(cx - 6.0f * scale, cy + 2.0f * scale, 8.0f * scale, gc);
-            vita2d_draw_fill_circle(cx + 5.0f * scale, cy - 1.0f * scale, 10.0f * scale, gc);
-            vita2d_draw_fill_circle(cx + 12.0f * scale, cy + 3.0f * scale, 6.0f * scale, gc);
-            vita2d_draw_rectangle(cx - 6.0f * scale, cy + 4.0f * scale, 18.0f * scale, 5.0f * scale, gc);
+            /* Centered cloud with shaded puff structure */
+            float cl_y = (kind == 1) ? cy : (cy - 3.5f * scale);
+            vita2d_draw_fill_circle(cx - 7.5f * scale, cl_y + 1.5f * scale, 7.5f * scale, RGBA8(180, 195, 215, 255));
+            vita2d_draw_fill_circle(cx + 0.0f * scale, cl_y - 2.0f * scale, 9.5f * scale, RGBA8(215, 226, 240, 255));
+            vita2d_draw_fill_circle(cx + 7.5f * scale, cl_y + 2.0f * scale, 6.5f * scale, RGBA8(195, 208, 225, 255));
+            vita2d_draw_rectangle(cx - 7.5f * scale, cl_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, RGBA8(200, 212, 230, 255));
+            vita2d_draw_fill_circle(cx - 1.0f * scale, cl_y - 3.0f * scale, 6.0f * scale, RGBA8(240, 246, 255, 220));
+
             if (kind == 2) {
-                for (int d = -1; d <= 1; ++d)
-                    vita2d_draw_rectangle(cx + d * 7.0f * scale, cy + 12.0f * scale, 2.0f * scale, 5.0f * scale, gc);
+                /* Rain: 3 clean slanted raindrops */
+                for (int d = -1; d <= 1; ++d) {
+                    float rx = cx + d * 7.5f * scale;
+                    float ry = cl_y + 12.0f * scale;
+                    vita2d_draw_line(rx, ry, rx - 1.5f * scale, ry + 5.0f * scale, RGBA8(96, 165, 250, 255));
+                    vita2d_draw_line(rx + 0.5f, ry, rx - 1.0f * scale, ry + 5.0f * scale, RGBA8(96, 165, 250, 255));
+                }
             } else if (kind == 3) {
-                for (int d = -1; d <= 1; ++d)
-                    vita2d_draw_fill_circle(cx + d * 8.0f * scale, cy + 14.0f * scale, 2.0f * scale, gc);
+                /* Snow: 3 delicate snowflakes */
+                for (int d = -1; d <= 1; ++d) {
+                    vita2d_draw_fill_circle(cx + d * 8.0f * scale, cl_y + 13.5f * scale, 2.0f * scale, RGBA8(224, 242, 254, 255));
+                }
             }
         }
         return;
@@ -466,50 +499,69 @@ static void draw_weather_glyph(float cx, float cy, int kind, float scale, int an
     float t = (float)(tick % 100000000ull) / 1000000.0f;
 
     if (kind == 0) {
-        /* Sun: pulsing sun disc with rotating and breathing golden rays */
-        float pulse = sinf(t * 3.5f) * 1.0f * scale;
-        vita2d_draw_fill_circle(cx, cy, 10.0f * scale + pulse, gc);
+        /* Sun: calm, gentle rotation with breathing rays and luminous core */
+        float pulse = sinf(t * 1.8f) * 0.8f * scale;
+        vita2d_draw_fill_circle(cx, cy, 9.5f * scale + pulse, RGBA8(250, 204, 21, 255));
+        /* Inner warm glow highlight */
+        vita2d_draw_fill_circle(cx - 2.0f * scale, cy - 2.0f * scale, 4.5f * scale, RGBA8(254, 240, 138, 220));
 
-        float rot = t * 0.7f;
+        float rot = t * 0.28f;   /* Relaxed, slower rotation */
         for (int i = 0; i < 8; ++i) {
             float ang = rot + i * 0.785398f; /* 45 degrees */
-            float r1 = (13.5f + pulse * 0.5f) * scale;
-            float r2 = (18.0f + 1.8f * sinf(t * 4.5f + i * 1.2f)) * scale;
+            float r1 = (12.5f + pulse * 0.4f) * scale;
+            float wave = sinf(t * 2.4f + i * 1.1f) * 1.2f;
+            float r2 = ((i % 2 == 0 ? 18.5f : 16.0f) + wave) * scale;
             float x1 = cx + cosf(ang) * r1, y1 = cy + sinf(ang) * r1;
             float x2 = cx + cosf(ang) * r2, y2 = cy + sinf(ang) * r2;
-            vita2d_draw_line(x1, y1, x2, y2, gc);
-            vita2d_draw_line(x1 + 0.5f, y1, x2 + 0.5f, y2, gc);
+            vita2d_draw_line(x1, y1, x2, y2, RGBA8(250, 204, 21, 255));
+            vita2d_draw_line(x1 + 0.6f, y1 + 0.6f, x2 + 0.6f, y2 + 0.6f, RGBA8(250, 204, 21, 255));
         }
     } else {
-        /* Cloud base with gentle vertical bobbing motion */
-        float dy = sinf(t * 2.2f) * 2.0f * scale;
-        float cloud_y = cy + dy;
+        /* Cloud base with gentle harmonic bobbing and floating motion */
+        float cl_base_y = (kind == 1) ? cy : (cy - 3.5f * scale);
+        float dy = sinf(t * 1.8f) * 1.8f * scale;
+        float dx = sinf(t * 1.1f) * 1.2f * scale;
+        float cloud_x = cx + dx;
+        float cloud_y = cl_base_y + dy;
 
-        /* Floating cloud body */
-        vita2d_draw_fill_circle(cx - 6.0f * scale, cloud_y + 2.0f * scale, 8.0f * scale, gc);
-        vita2d_draw_fill_circle(cx + 5.0f * scale, cloud_y - 1.0f * scale, 10.0f * scale, gc);
-        vita2d_draw_fill_circle(cx + 12.0f * scale, cloud_y + 3.0f * scale, 6.0f * scale, gc);
-        vita2d_draw_rectangle(cx - 6.0f * scale, cloud_y + 4.0f * scale, 18.0f * scale, 5.0f * scale, gc);
+        /* Ambient subtle puff behind for depth */
+        float bg_x = cx - 7.0f * scale - dx * 0.7f;
+        float bg_y = cl_base_y - 4.5f * scale - dy * 0.4f;
+        vita2d_draw_fill_circle(bg_x, bg_y, 6.0f * scale, RGBA8(148, 163, 184, 150));
+        vita2d_draw_fill_circle(bg_x + 5.5f * scale, bg_y - 1.5f * scale, 5.0f * scale, RGBA8(148, 163, 184, 150));
+
+        /* Main floating cloud body */
+        vita2d_draw_fill_circle(cloud_x - 7.5f * scale, cloud_y + 1.5f * scale, 7.5f * scale, RGBA8(180, 195, 215, 255));
+        vita2d_draw_fill_circle(cloud_x + 0.0f * scale, cloud_y - 2.0f * scale, 9.5f * scale, RGBA8(218, 228, 242, 255));
+        vita2d_draw_fill_circle(cloud_x + 7.5f * scale, cloud_y + 2.0f * scale, 6.5f * scale, RGBA8(195, 208, 225, 255));
+        vita2d_draw_rectangle(cloud_x - 7.5f * scale, cloud_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, RGBA8(200, 212, 230, 255));
+        /* Top rim highlight */
+        vita2d_draw_fill_circle(cloud_x - 1.0f * scale, cloud_y - 3.0f * scale, 6.0f * scale, RGBA8(245, 250, 255, 230));
 
         if (kind == 2) {
-            /* Rain: smooth looping falling raindrops slanted by wind */
-            unsigned int rc = RGBA8(96, 165, 250, 255);
-            for (int d = -1; d <= 1; ++d) {
-                float phase = fmodf(t * 2.5f + (d + 1) * 0.33f, 1.0f);
-                float drop_x = cx + d * 8.0f * scale - phase * 2.0f * scale;
-                float drop_y = cloud_y + (10.0f + phase * 16.0f) * scale;
-                vita2d_draw_line(drop_x, drop_y, drop_x - 1.5f * scale, drop_y + 4.5f * scale, rc);
-                vita2d_draw_line(drop_x + 0.5f, drop_y, drop_x - 1.0f * scale, drop_y + 4.5f * scale, rc);
+            /* Rain: 4 smooth looping falling raindrops with natural staggered timing */
+            for (int d = 0; d < 4; ++d) {
+                float col_offset = (d - 1.5f) * 6.0f * scale;
+                float speed = (d % 2 == 0) ? 2.8f : 3.4f;
+                float phase = fmodf(t * speed + d * 0.28f, 1.0f);
+                float drop_x = cx + col_offset - phase * 2.0f * scale;
+                float drop_y = cloud_y + (8.0f + phase * 18.0f) * scale;
+                float dlen = (5.0f + (d % 2) * 1.5f) * scale;
+                unsigned int rc = (d % 2 == 0) ? RGBA8(96, 165, 250, 255) : RGBA8(147, 197, 253, 240);
+                vita2d_draw_line(drop_x, drop_y, drop_x - 1.5f * scale, drop_y + dlen, rc);
+                vita2d_draw_line(drop_x + 0.6f, drop_y, drop_x - 0.9f * scale, drop_y + dlen, rc);
             }
         } else if (kind == 3) {
-            /* Snow: snowflakes gently drifting down and swaying horizontally */
-            unsigned int sc_col = RGBA8(224, 242, 254, 255);
-            for (int d = -1; d <= 1; ++d) {
-                float phase = fmodf(t * 1.0f + (d + 1) * 0.35f, 1.0f);
-                float sway = sinf(t * 3.0f + (d + 1) * 2.0f) * 3.5f * scale;
-                float snow_x = cx + d * 8.0f * scale + sway;
-                float snow_y = cloud_y + (10.0f + phase * 16.0f) * scale;
-                vita2d_draw_fill_circle(snow_x, snow_y, 2.0f * scale, sc_col);
+            /* Snow: 4 snowflakes swaying gracefully as they drift downward */
+            for (int d = 0; d < 4; ++d) {
+                float col_offset = (d - 1.5f) * 6.5f * scale;
+                float phase = fmodf(t * 0.85f + d * 0.26f, 1.0f);
+                float sway = sinf(t * 2.4f + d * 1.7f) * 2.5f * scale;
+                float snow_x = cx + col_offset + sway;
+                float snow_y = cloud_y + (8.0f + phase * 18.0f) * scale;
+                float sr = (d % 2 == 0 ? 1.8f : 2.3f) * scale;
+                vita2d_draw_fill_circle(snow_x, snow_y, sr, RGBA8(224, 242, 254, 255));
+                vita2d_draw_fill_circle(snow_x, snow_y, sr * 0.5f, RGBA8(255, 255, 255, 255));
             }
         }
     }
@@ -623,7 +675,7 @@ static void weather_modal_draw(const Input *in) {
         text(bold, (int)cx + ((int)col_w - dtw) / 2, (int)col_y + 26, on ? C_TEXT : C_DIM, 14, dtitle);
 
         int dkind = weather_kind(days[d].code);
-        draw_weather_glyph(cx + col_w / 2.0f, col_y + 64, dkind, 1.1f, on);
+        draw_weather_glyph(cx + col_w / 2.0f, col_y + 68, dkind, 1.40f, on);
 
         const char *desc = weather_desc(days[d].code);
         int cw = text_w(font, 13, desc);

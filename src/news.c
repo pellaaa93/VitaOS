@@ -224,10 +224,22 @@ static int worker(SceSize args, void *argp) {
     sceIoMkdir(NEWS_DIR, 0777);
     for (int i = 0; i < nitems; ++i) {
         NewsItem *it = &items[i];
-        if (!it->image[0] || it->image_path[0]) continue;
+        if (!it->image[0] || it->image_path[0] || strstr(it->image, ".gif") || strstr(it->image, ".gifv") ||
+            strstr(it->image, ".mp4") || strstr(it->image, ".webm")) continue;
         char path[80];
         snprintf(path, sizeof(path), NEWS_DIR "/%s.jpg", it->id);
-        if (store_fetch(it->image, path) >= 0) snprintf(it->image_path, sizeof(it->image_path), "%s", path);
+        if (store_fetch(it->image, path) >= 0) {
+            SceUID vf = sceIoOpen(path, SCE_O_RDONLY, 0);
+            if (vf >= 0) {
+                unsigned char magic[4] = {0};
+                sceIoRead(vf, magic, 4);
+                sceIoClose(vf);
+                int is_jpeg = (magic[0] == 0xFF && magic[1] == 0xD8);
+                int is_png = (magic[0] == 0x89 && magic[1] == 'P' && magic[2] == 'N' && magic[3] == 'G');
+                if (is_jpeg || is_png) snprintf(it->image_path, sizeof(it->image_path), "%s", path);
+                else sceIoRemove(path);
+            }
+        }
     }
     return sceKernelExitDeleteThread(0);
 }

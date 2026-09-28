@@ -6,6 +6,7 @@
 void hometab_update(const Input *in);
 const char *hometab_hint(void);
 void hometab_reset(void);   /* PS: focus back on the first tile */
+void hometab_leave(void);   /* leave Home: clear news images from cache */
 enum { HOMETAB_TO_MOVIES = 1, HOMETAB_TO_STORE = 2 };
 int hometab_wants_tab(void);   /* HOMETAB_TO_MOVIES after opening a film, else -1 */
 

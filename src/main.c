@@ -630,6 +630,7 @@ int main(void) {
             search_close();
             settings_leave();
             store_leave();
+            if (tab == T_HOME) hometab_leave();
             if (tab == T_MOVIES) movies_leave();
             camera_leave();
             memo_leave();
@@ -668,6 +669,7 @@ int main(void) {
         if (tab != was) {
             STAGE("tab switch");
             { char b[4]; int n = snprintf(b, sizeof(b), "%d", tab); ui_save(LAST_TAB, b, n, 0); }
+            if (was == T_HOME) hometab_leave();
             if (was == T_PLAY) play_leave();
             if (was == T_MOVIES) movies_leave();
             if (was == T_APPS) { camera_leave(); memo_leave(); }
