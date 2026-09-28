@@ -40,13 +40,21 @@ static struct {
 static volatile SceUInt64 wanted_until;     /* the tab is on screen: keep the numbers fresh */
 static int brightness = -1, volume = -1, focus;
 static SceUInt64 last;
+static float scroll_y = 0.0f, target_scroll_y = 0.0f;
 
-enum { F_BRIGHT, F_VOLUME, F_SFX, F_AMBIENT, F_STORAGE, F_WEATHER, F_BLUETOOTH, F_ABOUT, F_THEME, F_CLOCK, F_BUBBLES, F_SLEEP, F_RESTART, F_POWEROFF, NFOCUS };
+enum {
+    F_BRIGHT, F_VOLUME, F_SFX, F_AMBIENT,
+    F_BUBBLES, F_SLEEP, F_RESTART, F_POWEROFF,
+    F_STORAGE, F_THEME, F_CLOCK,
+    F_WEATHER, F_ABOUT, F_BLUETOOTH,
+    NFOCUS
+};
 static void (*release_ps)(void);
 void settings_on_release_ps(void (*fn)(void)) { release_ps = fn; }
 static void (*lib_rescan)(void), (*lib_art)(void);
 void settings_on_library(void (*rescan)(void), void (*art)(void)) { lib_rescan = rescan; lib_art = art; }
-void settings_leave(void) { storage_close(); focus = 0; }
+void settings_leave(void) { storage_close(); focus = 0; scroll_y = 0.0f; target_scroll_y = 0.0f; }
+
 
 static int remote_listening(void) {
     int fd = sceNetSocket("home_probe", SCE_NET_AF_INET, SCE_NET_SOCK_STREAM, 0);
@@ -313,10 +321,10 @@ static void sys_icon(int k, float cx, float cy, unsigned int c) {
     if (t) vita2d_draw_texture_tint_scale(t, cx - 16, cy - 16, 0.5f, 0.5f, c);
 }
 
-static void button_row(int x, int y, const char *label, const char *sub, int on) {
-    if (on) vita2d_draw_rectangle(x - 8, y - 22, 290, 42, C_SEL);
-    text(font, x, y, on ? C_TEXT : C_DIM, 17, label);
-    text(font, x, y + 16, C_FAINT, 13, sub);
+static void button_row(int x, int y, int w, const char *label, const char *sub, int on) {
+    if (on) draw_round_rect(x - 8, y - 18, w, 38, 8, C_SEL);
+    text(bold, x, y, on ? C_TEXT : C_DIM, 15, label);
+    text_fit(font, x, y + 16, C_FAINT, 13, sub, w - 16);
 }
 
 const char *settings_hint(void) {
@@ -335,33 +343,112 @@ void settings_update(const Input *in) {
     }
     wanted_until = now + 3000000;
 
-    /* The four system buttons sit in a row: left/right moves along it, up
-     * leaves it; everywhere else up/down steps through the rows. */
-    int sysrow = focus >= F_BUBBLES;
+    const int C1 = 12, C2 = 324, C3 = 636;
+    const int R1 = 76, R2 = 272, R3 = 480;
+    const int CW = 312, CH = 186;
+
+    int act = (in->pressed & SCE_CTRL_CROSS);
+
+    /* Touch drag scrolling */
+    int sy = (int)(scroll_y + 0.5f);
+    if (in->touching && in->drag_dy) {
+        scroll_y -= in->drag_dy;
+        target_scroll_y = scroll_y;
+    }
+
+    if (in->tapped) {
+        int tx = in->tap_x, ty = in->tap_y + sy;
+        /* Card 1 sliders */
+        if (tx >= C1 && tx < C1 + CW) {
+            if (ty >= R1 + 36 && ty < R1 + 72) focus = F_BRIGHT;
+            else if (ty >= R1 + 72 && ty < R1 + 108) focus = F_VOLUME;
+            else if (ty >= R1 + 108 && ty < R1 + 144) focus = F_SFX;
+            else if (ty >= R1 + 144 && ty < R1 + 180) focus = F_AMBIENT;
+        }
+        /* Card 6 system buttons */
+        for (int k = 0; k < 4; ++k) {
+            int bx = C3 + 22 + k * 72, by = R2 + 58;
+            if (tx >= bx && tx < bx + 56 && ty >= by && ty < by + 56) {
+                focus = F_BUBBLES + k;
+                act = 1;
+            }
+        }
+        /* Row 3 Left card: Preferences & Storage */
+        if (tx >= C1 && tx < C1 + 460 && ty >= R3) {
+            if (ty >= R3 + 42 && ty < R3 + 84) { focus = F_STORAGE; act = 1; }
+            else if (ty >= R3 + 84 && ty < R3 + 126) { focus = F_THEME; act = 1; }
+            else if (ty >= R3 + 126 && ty < R3 + 172) { focus = F_CLOCK; act = 1; }
+        }
+        /* Row 3 Right card: Services & System */
+        if (tx >= 488 && tx < 488 + 460 && ty >= R3) {
+            if (ty >= R3 + 42 && ty < R3 + 84) { focus = F_WEATHER; act = 1; }
+            else if (ty >= R3 + 84 && ty < R3 + 126) { focus = F_ABOUT; act = 1; }
+            else if (ty >= R3 + 126 && ty < R3 + 172) { focus = F_BLUETOOTH; act = 1; }
+        }
+    }
+
+    /* D-Pad navigation */
     if (in->pressed & SCE_CTRL_UP) {
-        if (sysrow) focus = (focus >= F_RESTART) ? F_CLOCK : F_THEME;
-        else if (focus == F_THEME || focus == F_CLOCK) focus = F_ABOUT;
-        else focus = (focus + NFOCUS - 1) % NFOCUS;
+        if (focus == F_VOLUME) focus = F_BRIGHT;
+        else if (focus == F_SFX) focus = F_VOLUME;
+        else if (focus == F_AMBIENT) focus = F_SFX;
+        else if (focus >= F_BUBBLES && focus <= F_POWEROFF) focus = F_AMBIENT;
+        else if (focus == F_STORAGE) focus = F_AMBIENT;
+        else if (focus == F_THEME) focus = F_STORAGE;
+        else if (focus == F_CLOCK) focus = F_THEME;
+        else if (focus == F_WEATHER) focus = F_RESTART;
+        else if (focus == F_ABOUT) focus = F_WEATHER;
+        else if (focus == F_BLUETOOTH) focus = F_ABOUT;
     }
     if (in->pressed & SCE_CTRL_DOWN) {
-        if (sysrow) { /* remain on sysrow */ }
+        if (focus == F_BRIGHT) focus = F_VOLUME;
+        else if (focus == F_VOLUME) focus = F_SFX;
+        else if (focus == F_SFX) focus = F_AMBIENT;
+        else if (focus == F_AMBIENT) focus = F_STORAGE;
+        else if (focus >= F_BUBBLES && focus <= F_POWEROFF) {
+            if (focus >= F_RESTART) focus = F_WEATHER;
+            else focus = F_STORAGE;
+        }
+        else if (focus == F_STORAGE) focus = F_THEME;
+        else if (focus == F_THEME) focus = F_CLOCK;
+        else if (focus == F_WEATHER) focus = F_ABOUT;
+        else if (focus == F_ABOUT) focus = F_BLUETOOTH;
+    }
+    if (in->pressed & SCE_CTRL_LEFT) {
+        if (focus >= F_BUBBLES + 1 && focus <= F_POWEROFF) focus--;
+        else if (focus == F_BUBBLES) focus = F_AMBIENT;
+        else if (focus == F_WEATHER) focus = F_STORAGE;
         else if (focus == F_ABOUT) focus = F_THEME;
-        else if (focus == F_THEME) focus = F_BUBBLES;
-        else if (focus == F_CLOCK) focus = F_RESTART;
-        else focus = focus + 1;
+        else if (focus == F_BLUETOOTH) focus = F_CLOCK;
+        else if (focus == F_BRIGHT) set_brightness(brightness - (BRIGHT_MAX / 20));
+        else if (focus == F_VOLUME) set_volume(volume - 1);
+        else if (focus == F_SFX) { sfx_set_level(sfx_level() - 1); sfx_play(SFX_SELECT); }
+        else if (focus == F_AMBIENT) sfx_set_ambient_level(sfx_ambient_level() - 1);
     }
-    if (sysrow && (in->pressed & SCE_CTRL_LEFT) && focus > F_BUBBLES) focus--;
-    if (sysrow && (in->pressed & SCE_CTRL_RIGHT) && focus < F_POWEROFF) focus++;
-    if (!sysrow) {
-        if (focus == F_THEME && (in->pressed & SCE_CTRL_RIGHT)) focus = F_CLOCK;
-        else if (focus == F_CLOCK && (in->pressed & SCE_CTRL_LEFT)) focus = F_THEME;
+    if (in->pressed & SCE_CTRL_RIGHT) {
+        if (focus >= F_BUBBLES && focus < F_POWEROFF) focus++;
+        else if (focus == F_STORAGE) focus = F_WEATHER;
+        else if (focus == F_THEME) focus = F_ABOUT;
+        else if (focus == F_CLOCK) focus = F_BLUETOOTH;
+        else if (focus == F_BRIGHT) set_brightness(brightness + (BRIGHT_MAX / 20));
+        else if (focus == F_VOLUME) set_volume(volume + 1);
+        else if (focus == F_SFX) { sfx_set_level(sfx_level() + 1); sfx_play(SFX_SELECT); }
+        else if (focus == F_AMBIENT) sfx_set_ambient_level(sfx_ambient_level() + 1);
     }
-    int dir = sysrow ? 0 : (in->pressed & SCE_CTRL_RIGHT) ? 1 : (in->pressed & SCE_CTRL_LEFT) ? -1 : 0;
-    if (dir && focus == F_BRIGHT) set_brightness(brightness + dir * (BRIGHT_MAX / 20));
-    if (dir && focus == F_VOLUME) set_volume(volume + dir);
-    if (dir && focus == F_SFX) { sfx_set_level(sfx_level() + dir); sfx_play(SFX_SELECT); }   /* hear the new level */
-    if (dir && focus == F_AMBIENT) sfx_set_ambient_level(sfx_ambient_level() + dir);
-    if (in->pressed & SCE_CTRL_CROSS) {
+
+    /* Target scroll based on focus */
+    if (focus <= F_POWEROFF) target_scroll_y = 0.0f;
+    else target_scroll_y = 220.0f;
+
+    if (scroll_y < 0.0f) scroll_y = 0.0f;
+    if (scroll_y > 220.0f) scroll_y = 220.0f;
+    if (target_scroll_y < 0.0f) target_scroll_y = 0.0f;
+    if (target_scroll_y > 220.0f) target_scroll_y = 220.0f;
+    scroll_y += (target_scroll_y - scroll_y) * 0.25f;
+    sy = (int)(scroll_y + 0.5f);
+
+    /* Actions on CROSS or Tap */
+    if (act) {
         if (focus == F_STORAGE) storage_open();
         if (focus == F_BUBBLES && release_ps) release_ps();
         if (focus == F_WEATHER) weather_pick();
@@ -371,8 +458,6 @@ void settings_update(const Input *in) {
             ui_toast(ui_time_format() == UI_TIME_24H ? "Clock: 24-hour" : "Clock: 12-hour (AM/PM)", C_ACCENT);
         }
         static char get_label[40], boot_label[48], clock_label[48];
-        /* Start at boot: the PS plugin (1.3) opens VitaOS after power-on
-         * unless user/boot.off is there (asked for 2026-09-27). */
         SceIoStat bst;
         int boot_on = sceIoGetstat("ux0:data/arcadehub/user/boot.off", &bst) < 0;
         snprintf(boot_label, sizeof(boot_label), "Start at boot: %s", boot_on ? "On" : "Off");
@@ -405,8 +490,8 @@ void settings_update(const Input *in) {
                        "Not affiliated with or endorsed by Sony Interactive Entertainment. "
                        "PlayStation and PS Vita are trademarks of Sony Interactive Entertainment.\n"
                        "Console photos: Evan-Amos, Wikimedia Commons. Weather: Open-Meteo.");
-        if (focus == F_BLUETOOTH) {                  /* pairing lives in the system Settings app */
-            if (release_ps) release_ps();            /* so PS can bring Home back */
+        if (focus == F_BLUETOOTH) {
+            if (release_ps) release_ps();
             if (sceAppMgrLaunchAppByUri(0x20000, "settings_dlg:") < 0) ui_toast("Settings would not open", C_BAD);
             else ui_toast("Devices > Bluetooth Devices. PS comes back here.", C_ACCENT);
         }
@@ -419,50 +504,45 @@ void settings_update(const Input *in) {
     }
 
     char v[96];
-    const int C1 = 12, C2 = 324, C3 = 636, R1 = 76, R2 = 272, CW = 312, CH = 186;
+    int y_r1 = R1 - sy;
+    int y_r2 = R2 - sy;
+    int y_r3 = R3 - sy;
 
-    card(C1, R1, CW, CH, "Display & sound");
+    /* Card 1: Display & sound */
+    card(C1, y_r1, CW, CH, "Display & sound");
     snprintf(v, sizeof(v), "%d%%", (brightness - BRIGHT_MIN) * 100 / (BRIGHT_MAX - BRIGHT_MIN));
-    slider(C1 + 18, R1 + 54, "Brightness", (float)(brightness - BRIGHT_MIN) / (BRIGHT_MAX - BRIGHT_MIN), v, focus == F_BRIGHT);
+    slider(C1 + 18, y_r1 + 54, "Brightness", (float)(brightness - BRIGHT_MIN) / (BRIGHT_MAX - BRIGHT_MIN), v, focus == F_BRIGHT);
     snprintf(v, sizeof(v), "%d / %d", volume, VOL_MAX);
-    slider(C1 + 18, R1 + 90, "Volume", volume / (float)VOL_MAX, v, focus == F_VOLUME);
+    slider(C1 + 18, y_r1 + 90, "Volume", volume / (float)VOL_MAX, v, focus == F_VOLUME);
     if (!sfx_ok()) snprintf(v, sizeof(v), "no audio port");
     else if (sfx_level()) snprintf(v, sizeof(v), "%d / 10", sfx_level()); else snprintf(v, sizeof(v), "off");
-    slider(C1 + 18, R1 + 126, "UI sounds", sfx_level() / 10.0f, v, focus == F_SFX);
+    slider(C1 + 18, y_r1 + 126, "UI sounds", sfx_level() / 10.0f, v, focus == F_SFX);
     if (sfx_ambient_level()) snprintf(v, sizeof(v), "%d / 10", sfx_ambient_level()); else snprintf(v, sizeof(v), "off");
-    slider(C1 + 18, R1 + 162, "Home music", sfx_ambient_level() / 10.0f, v, focus == F_AMBIENT);
+    slider(C1 + 18, y_r1 + 162, "Home music", sfx_ambient_level() / 10.0f, v, focus == F_AMBIENT);
 
-    card(C2, R1, CW - 12, CH, "Power");
-    {
-        char w[96];
-        const char *pl = weather_place();
-        snprintf(w, sizeof(w), "X Weather: %s", pl && *pl ? pl : "off");
-        if (in->tapped && in->tap_x >= C2 && in->tap_x < C2 + CW - 12 && in->tap_y >= R1 + CH - 34 && in->tap_y < R1 + CH) focus = F_WEATHER;
-        if (focus == F_WEATHER) vita2d_draw_rectangle(C2 + 10, R1 + CH - 34, CW - 32, 28, C_SEL);
-        draw_hints(C2 + 18, R1 + CH - 20, w, focus == F_WEATHER ? C_TEXT : C_DIM, C2 + CW - 20);
-    }
+    /* Card 2: Power */
+    card(C2, y_r1, CW - 12, CH, "Power");
     snprintf(v, sizeof(v), "%d%%%s", s.battery, s.charging ? "  charging" : s.plugged ? "  plugged in" : "");
-    row(C2 + 18, R1 + 66, "Battery", v, s.battery < 15 && !s.plugged ? C_BAD : C_TEXT);
-    draw_bar(C2 + 18, R1 + 78, CW - 48, 6, s.battery / 100.0f, s.battery < 15 ? C_BAD : C_OK);
+    row(C2 + 18, y_r1 + 66, "Battery", v, s.battery < 15 && !s.plugged ? C_BAD : C_TEXT);
+    draw_bar(C2 + 18, y_r1 + 78, CW - 48, 6, s.battery / 100.0f, s.battery < 15 ? C_BAD : C_OK);
     if (s.minutes > 0 && !s.plugged) snprintf(v, sizeof(v), "%dh %02dm", s.minutes / 60, s.minutes % 60);
     else snprintf(v, sizeof(v), "%s", s.plugged ? "on external power" : "estimating");
-    row(C2 + 18, R1 + 116, "Time left", v, C_TEXT);
+    row(C2 + 18, y_r1 + 116, "Time left", v, C_TEXT);
     snprintf(v, sizeof(v), "%d.%d C   %d.%02d V", s.temp / 100, (s.temp % 100) / 10, s.volt / 1000, (s.volt % 1000) / 10);
-    row(C2 + 18, R1 + 146, "Health", v, C_TEXT);
+    row(C2 + 18, y_r1 + 146, "Health", v, C_TEXT);
 
-    card(C3, R1, CW, CH, "Network");
-    row(C3 + 18, R1 + 62, "Address", s.ip[0] ? s.ip : "not connected", s.ip[0] ? C_TEXT : C_BAD);
-    row(C3 + 18, R1 + 88, "Wi-Fi", s.ssid[0] ? s.ssid : "-", C_TEXT);
-    if (s.rssi >= 0) { snprintf(v, sizeof(v), "%d%%", s.rssi); row(C3 + 18, R1 + 114, "Signal", v, s.rssi < 30 ? C_BAD : C_TEXT); }
-    if (s.remote) row(C3 + 18, R1 + 140, "Agents", "remote listening", C_OK);   /* the developer's agent bridge only */
-    if (in->tapped && in->tap_x >= C3 && in->tap_x < C3 + CW && in->tap_y >= R1 + CH - 34 && in->tap_y < R1 + CH) focus = F_BLUETOOTH;
-    if (focus == F_BLUETOOTH) vita2d_draw_rectangle(C3 + 10, R1 + CH - 34, CW - 20, 28, C_SEL);
-    draw_hints(C3 + 18, R1 + CH - 20, "X Bluetooth devices", focus == F_BLUETOOTH ? C_TEXT : C_DIM, C3 + CW);
+    /* Card 3: Network */
+    card(C3, y_r1, CW, CH, "Network");
+    row(C3 + 18, y_r1 + 62, "Address", s.ip[0] ? s.ip : "not connected", s.ip[0] ? C_TEXT : C_BAD);
+    row(C3 + 18, y_r1 + 88, "Wi-Fi", s.ssid[0] ? s.ssid : "-", C_TEXT);
+    if (s.rssi >= 0) { snprintf(v, sizeof(v), "%d%%", s.rssi); row(C3 + 18, y_r1 + 114, "Signal", v, s.rssi < 30 ? C_BAD : C_TEXT); }
+    if (s.remote) row(C3 + 18, y_r1 + 140, "Agents", "remote listening", C_OK);
 
-    card(C1, R2, CW, CH, "Storage");
+    /* Card 4: Storage */
+    card(C1, y_r2, CW, CH, "Storage");
     static const char *const devs[] = {"ux0:", "ur0:", "uma0:", "imc0:"};
-    int y = R2 + 66;
-    for (unsigned int i = 0; i < 4 && y < R2 + CH - 10; ++i) {
+    int y = y_r2 + 66;
+    for (unsigned int i = 0; i < 4 && y < y_r2 + CH - 10; ++i) {
         if (!s.dev_ok[i]) continue;
         SceIoDevInfo d = s.dev[i];
         char fr[32], tot[32];
@@ -475,59 +555,62 @@ void settings_update(const Input *in) {
         y += 44;
     }
 
-    if (focus == F_STORAGE) vita2d_draw_rectangle(C1 + 10, R2 + CH - 34, CW - 20, 28, C_SEL);
-    draw_hints(C1 + 18, R2 + CH - 20, "X Manage storage and clean up", focus == F_STORAGE ? C_TEXT : C_DIM, C1 + CW);
-
-    card(C2, R2, CW - 12, CH, "Performance (MHz)");
-    if (in->tapped && in->tap_x >= C2 && in->tap_x < C2 + CW - 12 && in->tap_y >= R2 + CH - 34 && in->tap_y < R2 + CH) focus = F_ABOUT;
-    if (focus == F_ABOUT) vita2d_draw_rectangle(C2 + 10, R2 + CH - 34, CW - 32, 28, C_SEL);
-    draw_hints(C2 + 18, R2 + CH - 20, "X VitaOS: games, box art, about", focus == F_ABOUT ? C_TEXT : C_DIM, C2 + CW - 20);
+    /* Card 5: Performance */
+    card(C2, y_r2, CW - 12, CH, "Performance (MHz)");
     snprintf(v, sizeof(v), "%d", s.arm);
-    row(C2 + 18, R2 + 66, "CPU", v, s.arm < 100 ? C_BAD : C_TEXT);   /* 1 MHz looks like a broken emulator */
+    row(C2 + 18, y_r2 + 66, "CPU", v, s.arm < 100 ? C_BAD : C_TEXT);
     snprintf(v, sizeof(v), "%d", s.bus);
-    row(C2 + 18, R2 + 96, "Bus", v, C_TEXT);
+    row(C2 + 18, y_r2 + 96, "Bus", v, C_TEXT);
     snprintf(v, sizeof(v), "%d / %d", s.gpu, s.xbar);
-    row(C2 + 18, R2 + 126, "GPU / xbar", v, C_TEXT);
+    row(C2 + 18, y_r2 + 126, "GPU / xbar", v, C_TEXT);
 
-    card(C3, R2, CW, CH, "System");
+    /* Card 6: System */
+    card(C3, y_r2, CW, CH, "System");
     static const char *const names[4] = {"System home", "Sleep", "Restart", "Power off"};
     for (int k = 0; k < 4; ++k) {
-        int f = F_BUBBLES + k, bx = C3 + 22 + k * 72, by = R2 + 58;
-        if (in->tapped && in->tap_x >= bx && in->tap_x < bx + 56 && in->tap_y >= by && in->tap_y < by + 56) focus = f;
+        int f = F_BUBBLES + k, bx = C3 + 22 + k * 72, by = y_r2 + 58;
         int on = focus == f;
         if (on) draw_focus_r(bx, by, 56, 56, 1, 16);
         draw_round_rect(bx, by, 56, 56, 16, on ? RGBA8(255, 255, 255, 36) : RGBA8(255, 255, 255, 16));
-        /* the cut-outs are painted in the tile's own colour (panel + white wash) */
         sys_icon(k, bx + 28, by + 28, on ? C_TEXT : C_DIM);
         int tw = text_w(font, 12, names[k]);
         text(font, bx + 28 - tw / 2, by + 76, on ? C_TEXT : C_FAINT, 12, names[k]);
     }
     const char *what = focus == F_BUBBLES ? "PS opens the bubbles for 30 s" : focus == F_SLEEP ? "Wi-Fi off: agents lose the console"
                      : focus == F_RESTART ? "Back in about a minute" : focus == F_POWEROFF ? "Hold power to turn it back on" : "";
-    text_fit(font, C3 + 18, R2 + CH - 14, C_FAINT, 13, what, CW - 36);
+    text_fit(font, C3 + 18, y_r2 + CH - 14, C_FAINT, 13, what, CW - 36);
 
-    /* Slim rows for Theme and Clock, in the gap below the two card rows. */
-    {
-        int ty = R2 + CH + 6;
-        int theme_w = C2 + CW - C1 - 10;
-        int clock_x = C3;
-        int clock_w = CW;
+    /* Row 3: Dedicated Options Section */
+    int card_w = 460;
+    int opt_h = 180;
 
-        char t[160];
-        snprintf(t, sizeof(t), "X Theme: %s, %s",
-                 ui_theme_accent_name(ui_theme_accent_index()), ui_theme_bg_name(ui_theme_bg()));
-        if (in->tapped && in->tap_x >= C1 && in->tap_x < C1 + theme_w && in->tap_y >= ty && in->tap_y < ty + 28) focus = F_THEME;
-        if (focus == F_THEME) vita2d_draw_rectangle(C1 + 2, ty, theme_w, 28, C_SEL);
-        draw_hints(C1 + 18, ty + 14, t, focus == F_THEME ? C_TEXT : C_DIM, C1 + theme_w - 10);
+    /* Left Card: Preferences & Storage */
+    card(C1, y_r3, card_w, opt_h, "Preferences & Storage");
+    button_row(C1 + 20, y_r3 + 60, card_w - 40, "X Manage storage and clean up", "Inspect partitions and delete caches", focus == F_STORAGE);
 
-        char c[64];
-        snprintf(c, sizeof(c), "X Clock: %s", ui_time_format_name(ui_time_format()));
-        if (in->tapped && in->tap_x >= clock_x && in->tap_x < clock_x + clock_w && in->tap_y >= ty && in->tap_y < ty + 28) {
-            focus = F_CLOCK;
-            ui_set_time_format(ui_time_format() == UI_TIME_12H ? UI_TIME_24H : UI_TIME_12H);
-            ui_toast(ui_time_format() == UI_TIME_24H ? "Clock: 24-hour" : "Clock: 12-hour (AM/PM)", C_ACCENT);
-        }
-        if (focus == F_CLOCK) vita2d_draw_rectangle(clock_x, ty, clock_w, 28, C_SEL);
-        draw_hints(clock_x + 14, ty + 14, c, focus == F_CLOCK ? C_TEXT : C_DIM, clock_x + clock_w - 10);
-    }
+    char th_sub[96];
+    snprintf(th_sub, sizeof(th_sub), "Accent: %s  \xC2\xB7  Background: %s",
+             ui_theme_accent_name(ui_theme_accent_index()), ui_theme_bg_name(ui_theme_bg()));
+    button_row(C1 + 20, y_r3 + 102, card_w - 40, "X Theme", th_sub, focus == F_THEME);
+
+    char ck_sub[64];
+    snprintf(ck_sub, sizeof(ck_sub), "Current format: %s", ui_time_format_name(ui_time_format()));
+    button_row(C1 + 20, y_r3 + 144, card_w - 40, "X Clock format", ck_sub, focus == F_CLOCK);
+
+    /* Right Card: Services & System */
+    card(488, y_r3, card_w, opt_h, "Services & System");
+    const char *pl = weather_place();
+    char wx_sub[96];
+    snprintf(wx_sub, sizeof(wx_sub), "Location: %s", pl && *pl ? pl : "Off");
+    button_row(488 + 20, y_r3 + 60, card_w - 40, "X Weather", wx_sub, focus == F_WEATHER);
+
+    button_row(488 + 20, y_r3 + 102, card_w - 40, "X VitaOS", "Games, box art, power-on boot, about", focus == F_ABOUT);
+
+    button_row(488 + 20, y_r3 + 144, card_w - 40, "X Bluetooth devices", "Manage controller and audio pairing", focus == F_BLUETOOTH);
+
+    /* Scrollbar indicator on the right edge */
+    float sb_h = 60.0f;
+    float sb_y = 76.0f + (scroll_y / 220.0f) * (420.0f - sb_h);
+    draw_round_rect(W - 7, sb_y, 4, sb_h, 2, RGBA8(255, 255, 255, 60));
 }
+

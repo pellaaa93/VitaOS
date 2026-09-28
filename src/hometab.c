@@ -57,6 +57,10 @@ static int player_moved;
 static int swiping;                                 /* a finger is dragging the row */
 static int reading = -1;                            /* the news post open in the reader */
 static float read_scroll;
+static int focus_widget;                            /* focus on weather widget */
+static int weather_modal;                           /* detailed 4-day forecast pop-up modal */
+static int forecast_sel;                            /* day selected in modal (0..3) */
+
 
 static void add_movie(void) {
     static char meta[48];
@@ -178,6 +182,10 @@ static void widgets(void) {
     text(font, x + 90, y + 95, pct < 15 ? C_BAD : C_DIM, 14, small);
     int yy = y + 104;
     if (have_wx) {                           /* a small glyph, then the words */
+        if (focus_widget) {
+            draw_focus_r(x + 8, yy + 2, w - 16, 46, 1.0f, 8);
+            draw_round_rect(x + 8, yy + 2, w - 16, 46, 8, RGBA8(255, 255, 255, 26));
+        }
         vita2d_draw_rectangle(x + 16, yy, w - 32, 1, RGBA8(255, 255, 255, 20));
         unsigned int gc = wkind == 0 ? RGBA8(250, 204, 21, 255) : wkind == 2 ? RGBA8(96, 165, 250, 255) : RGBA8(203, 213, 225, 255);
         if (wkind == 0) vita2d_draw_fill_circle(x + 27, yy + 19, 6, gc);
@@ -190,6 +198,7 @@ static void widgets(void) {
         text_fit(font, x + 42, yy + 43, C_DIM, 13, wsub, w - 58);
         yy += 50;
     }
+
     if (*np) {
         vita2d_draw_rectangle(x + 16, yy, w - 32, 1, RGBA8(255, 255, 255, 20));
         text_fit(font, x + 20, yy + 26, C_TEXT, 15, np, w - 40);
@@ -355,25 +364,28 @@ static void backdrop(vita2d_texture *t, int alpha) {
     vita2d_draw_texture_tint_scale(t, x, y, sc, sc, RGBA8(255, 255, 255, alpha));
 }
 
-void hometab_reset(void) { sel = 0; anchor_kind = -1; nshown = 0; player_moved = 0; }
+void hometab_reset(void) { sel = 0; anchor_kind = -1; nshown = 0; player_moved = 0; focus_widget = 0; weather_modal = 0; forecast_sel = 0; }
 
 int hometab_wants_tab(void) { int t = want_tab; want_tab = -1; return t; }
 
 const char *hometab_hint(void) {
+    if (weather_modal) return "<- -> select day    O close";
     if (reading >= 0) {
         const NewsItem *n = news_get(reading);
         return n && store_match(n->title) >= 0 ? "X see it in the Store    \xE2\x86\x91 \xE2\x86\x93 scroll    O back"
                                                : "\xE2\x86\x91 \xE2\x86\x93 scroll    O back";
     }
+    if (focus_widget) return "X 4-day forecast    \xE2\x86\x93 back to tiles    O cancel";
     if (!nitems) return "L R tabs";
     switch (items[sel].kind) {
-    case K_MOVIE: return "X resume   <- -> choose   L R tabs";
-    case K_MUSIC: return "X play / pause   <- -> choose   L R tabs";
-    case K_NEWS: return "X read   <- -> choose   L R tabs";
-    case K_WEEK: return "<- -> choose   L R tabs";
-    default: return "X play   <- -> choose   L R tabs";
+    case K_MOVIE: return "X resume   <- -> choose   \xE2\x86\x91 weather   L R tabs";
+    case K_MUSIC: return "X play / pause   <- -> choose   \xE2\x86\x91 weather   L R tabs";
+    case K_NEWS: return "X read   <- -> choose   \xE2\x86\x91 weather   L R tabs";
+    case K_WEEK: return "<- -> choose   \xE2\x86\x91 weather   L R tabs";
+    default: return "X play   <- -> choose   \xE2\x86\x91 weather   L R tabs";
     }
 }
+
 
 /* The news reader: a full page for one post (asked for 2026-09-26: the old
  * message box was cramped). O closes it; X opens the app in the Store when
@@ -421,6 +433,147 @@ static void news_reader(const Input *in) {
                       tx, (int)by + 6, tw, 16, 14, C_TEXT);
 }
 
+static void draw_weather_glyph(float cx, float cy, int kind, float scale) {
+    unsigned int gc = kind == 0 ? RGBA8(250, 204, 21, 255) : kind == 2 ? RGBA8(96, 165, 250, 255) : kind == 3 ? RGBA8(186, 230, 253, 255) : RGBA8(203, 213, 225, 255);
+    if (kind == 0) {
+        vita2d_draw_fill_circle(cx, cy, 10.0f * scale, gc);
+    } else {
+        vita2d_draw_fill_circle(cx - 6.0f * scale, cy + 2.0f * scale, 8.0f * scale, gc);
+        vita2d_draw_fill_circle(cx + 5.0f * scale, cy - 1.0f * scale, 10.0f * scale, gc);
+        vita2d_draw_fill_circle(cx + 12.0f * scale, cy + 3.0f * scale, 6.0f * scale, gc);
+        vita2d_draw_rectangle(cx - 6.0f * scale, cy + 4.0f * scale, 18.0f * scale, 5.0f * scale, gc);
+        if (kind == 2) {
+            for (int d = -1; d <= 1; ++d)
+                vita2d_draw_rectangle(cx + d * 7.0f * scale, cy + 12.0f * scale, 2.0f * scale, 5.0f * scale, gc);
+        } else if (kind == 3) {
+            for (int d = -1; d <= 1; ++d)
+                vita2d_draw_fill_circle(cx + d * 8.0f * scale, cy + 14.0f * scale, 2.0f * scale, gc);
+        }
+    }
+}
+
+static void weather_modal_draw(const Input *in) {
+    WeatherDay days[4];
+    char town[64] = {0};
+    int f = 0, cur_temp = 0, cur_code = 0;
+    if (!weather_forecast(days, town, &f, &cur_temp, &cur_code)) {
+        weather_modal = 0;
+        return;
+    }
+
+    float px = 130, py = 84, pw = 700, ph = 376, pr = 16;
+
+    if (in->pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_TRIANGLE)) {
+        weather_modal = 0;
+        return;
+    }
+    if (in->pressed & SCE_CTRL_LEFT) {
+        if (forecast_sel > 0) forecast_sel--;
+        else sfx_play(SFX_BUMP);
+    }
+    if (in->pressed & SCE_CTRL_RIGHT) {
+        if (forecast_sel < 3) forecast_sel++;
+        else sfx_play(SFX_BUMP);
+    }
+    if (in->tapped) {
+        if (in->tap_x >= px + pw - 100 && in->tap_x <= px + pw - 14 && in->tap_y >= py + 14 && in->tap_y <= py + 48) {
+            weather_modal = 0;
+            return;
+        }
+        if (in->tap_x < px || in->tap_x > px + pw || in->tap_y < py || in->tap_y > py + ph) {
+            weather_modal = 0;
+            return;
+        }
+        float col_w = 152, gap = 12;
+        float start_cx = px + 24;
+        for (int d = 0; d < 4; ++d) {
+            float cx = start_cx + d * (col_w + gap);
+            if (in->tap_x >= cx && in->tap_x <= cx + col_w && in->tap_y >= py + 164 && in->tap_y <= py + 164 + 192) {
+                forecast_sel = d;
+                break;
+            }
+        }
+    }
+
+    /* Dim the background */
+    vita2d_draw_rectangle(0, 64, W, H - 104, RGBA8(12, 15, 22, 215));
+
+    /* Dialog box */
+    draw_round_rect(px, py, pw, ph, pr, RGBA8(24, 28, 38, 252));
+    draw_round_ring(px, py, pw, ph, pr, 1.5f, RGBA8(255, 255, 255, 30));
+
+    /* Header */
+    text(bold, (int)px + 28, (int)py + 26, C_ACCENT, 13, "WEATHER & 4-DAY FORECAST");
+    text(bold, (int)px + 28, (int)py + 54, C_TEXT, 22, town[0] ? town : "Local Weather");
+
+    /* Close hint button */
+    draw_round_rect(px + pw - 94, py + 18, 70, 26, 13, RGBA8(255, 255, 255, 20));
+    text(font, (int)px + (int)pw - 82, (int)py + 36, C_DIM, 13, "O Close");
+
+    /* Top separator */
+    vita2d_draw_rectangle((int)px + 24, (int)py + 66, (int)pw - 48, 1, RGBA8(255, 255, 255, 24));
+
+    /* Current weather hero banner */
+    char tstr[32];
+    snprintf(tstr, sizeof(tstr), "%d\xC2\xB0%c", cur_temp, f ? 'F' : 'C');
+    text(bold, (int)px + 32, (int)py + 118, C_TEXT, 40, tstr);
+    int tw = text_w(bold, 40, tstr);
+
+    int cur_kind = weather_kind(cur_code);
+    draw_weather_glyph(px + 32 + tw + 28, py + 104, cur_kind, 1.3f);
+
+    text(bold, (int)px + 32 + tw + 60, (int)py + 106, C_TEXT, 17, weather_desc(cur_code));
+    char hltxt[64];
+    snprintf(hltxt, sizeof(hltxt), "High %d\xC2\xB0  \xC2\xB7  Low %d\xC2\xB0", days[0].temp_max, days[0].temp_min);
+    text(font, (int)px + 32 + tw + 60, (int)py + 128, C_DIM, 14, hltxt);
+
+    /* Separator before forecast cards */
+    vita2d_draw_rectangle((int)px + 24, (int)py + 152, (int)pw - 48, 1, RGBA8(255, 255, 255, 24));
+
+    /* 4 Forecast day cards */
+    float col_w = 152, col_h = 192, gap = 12;
+    float start_cx = px + 24;
+    float col_y = py + 164;
+    SceDateTime dt;
+    sceRtcGetCurrentClockLocalTime(&dt);
+    int start_dow = sceRtcGetDayOfWeek(dt.year, dt.month, dt.day);
+    static const char *const full_dnames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+    for (int d = 0; d < 4; ++d) {
+        float cx = start_cx + d * (col_w + gap);
+        int on = (d == forecast_sel);
+        if (on) {
+            draw_focus_r(cx, col_y, col_w, col_h, 1.0f, 12);
+            draw_round_rect(cx, col_y, col_w, col_h, 12, RGBA8(38, 79, 140, 180));
+        } else {
+            draw_round_rect(cx, col_y, col_w, col_h, 12, RGBA8(255, 255, 255, 12));
+        }
+
+        char dtitle[32];
+        if (d == 0) snprintf(dtitle, sizeof(dtitle), "Today");
+        else if (d == 1) snprintf(dtitle, sizeof(dtitle), "Tomorrow");
+        else snprintf(dtitle, sizeof(dtitle), "%s", full_dnames[(start_dow + d) % 7]);
+
+        int dtw = text_w(bold, 14, dtitle);
+        text(bold, (int)cx + ((int)col_w - dtw) / 2, (int)col_y + 26, on ? C_TEXT : C_DIM, 14, dtitle);
+
+        int dkind = weather_kind(days[d].code);
+        draw_weather_glyph(cx + col_w / 2.0f, col_y + 64, dkind, 1.1f);
+
+        const char *desc = weather_desc(days[d].code);
+        int cw = text_w(font, 13, desc);
+        if (cw > col_w - 16) text_fit(font, (int)cx + 8, (int)col_y + 112, on ? C_TEXT : C_DIM, 13, desc, (int)col_w - 16);
+        else text(font, (int)cx + ((int)col_w - cw) / 2, (int)col_y + 112, on ? C_TEXT : C_DIM, 13, desc);
+
+        char hilotxt[32];
+        snprintf(hilotxt, sizeof(hilotxt), "%d\xC2\xB0 / %d\xC2\xB0", days[d].temp_max, days[d].temp_min);
+        int hlw = text_w(bold, 17, hilotxt);
+        text(bold, (int)cx + ((int)col_w - hlw) / 2, (int)col_y + 152, C_TEXT, 17, hilotxt);
+        int subw = text_w(font, 12, "High / Low");
+        text(font, (int)cx + ((int)col_w - subw) / 2, (int)col_y + 172, on ? C_TEXT : C_FAINT, 12, "High / Low");
+    }
+}
+
 void hometab_update(const Input *in) {
     if (reading >= 0) { news_reader(in); if (reading >= 0) return; in = &(Input){0}; }
     gather();
@@ -442,36 +595,60 @@ void hometab_update(const Input *in) {
                 }
                 break;
             }
-    if (in->pressed || in->tapped || in->touching) player_moved = 1;
-    if (!player_moved) {
-        sel = 0;
-        for (int i = 0; i < nitems; ++i) if (items[i].kind == K_GAME) { sel = i; break; }
-    }
-    if (sel >= nitems) sel = nitems - 1;
-    if (in->pressed & SCE_CTRL_LEFT) { if (sel > 0) sel--; else sfx_play(SFX_BUMP); }
-    if (in->pressed & SCE_CTRL_RIGHT) { if (sel < nitems - 1) sel++; else sfx_play(SFX_BUMP); }
-    if (in->tapped && in->tap_y > ROW_Y - 20 && in->tap_y < ROW_Y + TILE + 30) {
-        int i = (int)((in->tap_x - 48 + (pos - (int)pos) * (TILE + GAP)) / (TILE + GAP)) + (int)pos;
-        if (i >= 0 && i < nitems) {
-            if (i == sel) goto act;
-            sel = i;
+    if (!weather_modal) {
+        if (in->pressed || in->tapped || in->touching) player_moved = 1;
+        if (!player_moved) {
+            sel = 0;
+            for (int i = 0; i < nitems; ++i) if (items[i].kind == K_GAME) { sel = i; break; }
+        }
+        if (sel >= nitems) sel = nitems - 1;
+
+        /* Touch tap on weather widget */
+        if (in->tapped && weather_place()[0] && in->tap_x >= 664 && in->tap_x <= 936 && in->tap_y >= 186 && in->tap_y <= 236) {
+            weather_modal = 1;
+            forecast_sel = 0;
+            focus_widget = 0;
+        }
+
+        /* D-Pad UP from tiles to focus weather widget */
+        if (!focus_widget && (in->pressed & SCE_CTRL_UP) && weather_place()[0]) {
+            focus_widget = 1;
+        } else if (focus_widget) {
+            if (in->pressed & (SCE_CTRL_DOWN | SCE_CTRL_CIRCLE | SCE_CTRL_LEFT | SCE_CTRL_RIGHT)) {
+                focus_widget = 0;
+            } else if (in->pressed & SCE_CTRL_CROSS) {
+                weather_modal = 1;
+                forecast_sel = 0;
+                focus_widget = 0;
+            }
+        }
+
+        if (!focus_widget) {
+            if (in->pressed & SCE_CTRL_LEFT) { if (sel > 0) sel--; else sfx_play(SFX_BUMP); }
+            if (in->pressed & SCE_CTRL_RIGHT) { if (sel < nitems - 1) sel++; else sfx_play(SFX_BUMP); }
+            if (in->tapped && in->tap_y > ROW_Y - 20 && in->tap_y < ROW_Y + TILE + 30) {
+                int i = (int)((in->tap_x - 48 + (pos - (int)pos) * (TILE + GAP)) / (TILE + GAP)) + (int)pos;
+                if (i >= 0 && i < nitems) {
+                    if (i == sel) goto act;
+                    sel = i;
+                }
+            }
+            if (in->touching && in->drag_dx && in->ty > ROW_Y - 20 && in->ty < ROW_Y + TILE + 30) swiping = 1;
+            if (swiping) {
+                pos -= in->drag_dx / (float)(TILE + GAP);
+                if (pos < -0.5f) pos = -0.5f;
+                if (pos > nitems - 0.5f) pos = nitems - 0.5f;
+                if (!in->touching) {
+                    int t0 = sel > 2 ? sel - 2 : 0, ns = (int)(pos + 0.5f) + (sel - t0);
+                    sel = ns < 0 ? 0 : ns >= nitems ? nitems - 1 : ns;
+                    swiping = 0;
+                }
+            }
+            if (in->pressed & SCE_CTRL_CROSS) goto act;
         }
     }
-    /* A swipe along the row scrolls it; letting go picks the tile that is now
-     * where the focused one was (playtest 2026-09-25: it would not swipe). */
-    if (in->touching && in->drag_dx && in->ty > ROW_Y - 20 && in->ty < ROW_Y + TILE + 30) swiping = 1;
-    if (swiping) {
-        pos -= in->drag_dx / (float)(TILE + GAP);
-        if (pos < -0.5f) pos = -0.5f;
-        if (pos > nitems - 0.5f) pos = nitems - 0.5f;
-        if (!in->touching) {
-            int t0 = sel > 2 ? sel - 2 : 0, ns = (int)(pos + 0.5f) + (sel - t0);
-            sel = ns < 0 ? 0 : ns >= nitems ? nitems - 1 : ns;
-            swiping = 0;
-        }
-    }
-    if (in->pressed & SCE_CTRL_CROSS) goto act;
     goto draw;
+
 act: {
         Item *it = &items[sel];
         if (it->kind == K_GAME) {
@@ -561,4 +738,6 @@ draw:
         }
         if (i == sel) text_fit(bold, (int)tx, (int)(ROW_Y + TILE + 34), C_TEXT, 16, t->title, 300);
     }
+    if (weather_modal) weather_modal_draw(in);
 }
+

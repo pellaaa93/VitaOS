@@ -13,12 +13,15 @@
 
 #define CFG "ux0:data/arcadehub/user/weather.cfg"
 #define URL "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f" \
-            "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min" \
-            "&temperature_unit=%s&timezone=auto&forecast_days=1"
+            "&current=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min" \
+            "&temperature_unit=%s&timezone=auto&forecast_days=4"
 
 static char place[64];
 static volatile int stale;                            /* the town changed: fetch now */
 static SceUID weather_sema = -1;
+static WeatherDay days_forecast[4];
+static int is_fahrenheit;
+
 
 /* The town, from user/weather.cfg; 0 when none is set. */
 static int read_cfg(float *lat, float *lon, int *fahrenheit) {
@@ -37,6 +40,7 @@ static int read_cfg(float *lat, float *lon, int *fahrenheit) {
     *lat = t_lat;
     *lon = t_lon;
     *fahrenheit = (unit == 'F');
+    is_fahrenheit = *fahrenheit;
 
     char *p = town;
     while (*p == ' ' || *p == '\t') p++;
@@ -76,6 +80,31 @@ static float number_after(const char *section, const char *key) {
     return strtof(k, NULL);
 }
 
+/* Parse an array of floats after "key": inside the section. Returns count found. */
+static int array_after(const char *section, const char *key, float out[], int max_count) {
+    const char *s = body;
+    if (section && *section) {
+        s = strstr(body, section);
+        if (!s) return 0;
+    }
+    const char *k = strstr(s, key);
+    if (!k) return 0;
+    const char *bracket = strchr(k, '[');
+    if (!bracket) return 0;
+    const char *p = bracket + 1;
+    int count = 0;
+    while (*p && *p != ']' && count < max_count) {
+        while (*p == ' ' || *p == '\t' || *p == ',' || *p == '\r' || *p == '\n') p++;
+        if (*p == ']' || !*p) break;
+        char *next = NULL;
+        float val = strtof(p, &next);
+        if (next == p) break;
+        out[count++] = val;
+        p = next;
+    }
+    return count;
+}
+
 static int worker(SceSize args, void *argp) {
     (void)args; (void)argp;
     for (;;) {
@@ -89,6 +118,7 @@ static int worker(SceSize args, void *argp) {
             else for (int i = 0; i < 60 && !stale; ++i) sceKernelDelayThread(1000 * 1000);
             continue;
         }
+        is_fahrenheit = f;
         char url[320];
         snprintf(url, sizeof(url), URL, lat, lon, f ? "fahrenheit" : "celsius");
         CURL *c = curl_easy_init();
@@ -102,13 +132,20 @@ static int worker(SceSize args, void *argp) {
             if (curl_easy_perform(c) == CURLE_OK) {
                 float t = number_after("\"current\"", "\"temperature_2m\"");
                 float w = number_after("\"current\"", "\"weather_code\"");
-                float h = number_after("\"daily\"", "\"temperature_2m_max\"");
-                float l = number_after("\"daily\"", "\"temperature_2m_min\"");
+                float d_codes[4] = {0}, d_max[4] = {0}, d_min[4] = {0};
+                int nc = array_after("\"daily\"", "\"weather_code\"", d_codes, 4);
+                int nh = array_after("\"daily\"", "\"temperature_2m_max\"", d_max, 4);
+                int nl = array_after("\"daily\"", "\"temperature_2m_min\"", d_min, 4);
                 if (t > -200) {
                     temp = (int)(t + (t < 0 ? -0.5f : 0.5f));
                     code = (w > -900) ? (int)w : 0;
-                    hi = (h > -200) ? (int)(h + 0.5f) : temp;
-                    lo = (l > -200) ? (int)(l + 0.5f) : temp;
+                    hi = (nh > 0) ? (int)(d_max[0] + (d_max[0] < 0 ? -0.5f : 0.5f)) : temp;
+                    lo = (nl > 0) ? (int)(d_min[0] + (d_min[0] < 0 ? -0.5f : 0.5f)) : temp;
+                    for (int i = 0; i < 4; ++i) {
+                        days_forecast[i].code = (i < nc) ? (int)d_codes[i] : code;
+                        days_forecast[i].temp_max = (i < nh) ? (int)(d_max[i] + (d_max[i] < 0 ? -0.5f : 0.5f)) : temp;
+                        days_forecast[i].temp_min = (i < nl) ? (int)(d_min[i] + (d_min[i] < 0 ? -0.5f : 0.5f)) : temp;
+                    }
                     ready = 1;
                 }
             }
@@ -151,13 +188,35 @@ static const char *words(int c) {
     return "";
 }
 
+const char *weather_desc(int c) {
+    return words(c);
+}
+
+int weather_kind(int c) {
+    if (c == 0) return 0;
+    if (c <= 3 || c == 45 || c == 48) return 1;
+    if ((c >= 71 && c <= 77) || c == 85 || c == 86) return 3;
+    return 2;
+}
+
 int weather_line(char *out, int max, char *sub, int submax, int *kind) {
     if (!ready) return 0;
-    *kind = code == 0 ? 0 : code <= 3 || code == 45 || code == 48 ? 1 : (code >= 71 && code <= 77) || code == 85 || code == 86 ? 3 : 2;
+    *kind = weather_kind(code);
     snprintf(out, max, "%d\xC2\xB0  %s", temp, words(code));
     snprintf(sub, submax, "%s  \xC2\xB7  H %d\xC2\xB0  L %d\xC2\xB0", place, hi, lo);
     return 1;
 }
+
+int weather_forecast(WeatherDay days[4], char town[64], int *fahrenheit, int *curr_temp, int *curr_code) {
+    if (!ready) return 0;
+    if (days) memcpy(days, days_forecast, sizeof(WeatherDay) * 4);
+    if (town) snprintf(town, 64, "%s", place);
+    if (fahrenheit) *fahrenheit = is_fahrenheit;
+    if (curr_temp) *curr_temp = temp;
+    if (curr_code) *curr_code = code;
+    return 1;
+}
+
 
 /* Settings > Weather location: search Open-Meteo's geocoder, then save.
  * Returns the number of matches written to names/coords (up to max). */
@@ -233,6 +292,7 @@ void weather_set(const char *name, float lat, float lon, int fahrenheit) {
     SceUID fd = sceIoOpen(CFG, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
     if (fd >= 0) { sceIoWrite(fd, line, n); sceIoClose(fd); }
 
+    is_fahrenheit = fahrenheit;
     ready = 0;
     stale = 1;
     if (weather_sema >= 0) sceKernelSignalSema(weather_sema, 1);
@@ -241,8 +301,10 @@ void weather_set(const char *name, float lat, float lon, int fahrenheit) {
 void weather_off(void) {
     sceIoRemove(CFG);
     place[0] = 0;
+    memset(days_forecast, 0, sizeof(days_forecast));
     ready = 0;
     stale = 1;
     if (weather_sema >= 0) sceKernelSignalSema(weather_sema, 1);
 }
+
 const char *weather_place(void) { return place; }
