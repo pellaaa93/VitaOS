@@ -14,12 +14,12 @@
 #include "news.h"
 #include "store.h"
 
-#define FEED "https://www.reddit.com/r/vitahacks/.rss"
+#define FEED "https://www.reddit.com/r/vitahacks+PSVita+VitaPiracy/.rss"
 #define CACHE "ux0:data/arcadehub/news.rss"
 #define SEEN "ux0:data/arcadehub/user/news-seen.txt"
 #define STAMP "ux0:data/arcadehub/news.time"
 #define NEWS_DIR "ux0:data/arcadehub/news"
-#define MAX_NEWS 4
+#define MAX_NEWS 16
 
 static NewsItem items[MAX_NEWS];
 static volatile int nitems, ready;
@@ -143,6 +143,46 @@ static void parse(void) {
         snprintf(it->image_path, sizeof(it->image_path), NEWS_DIR "/%s.jpg", it->id);
         SceIoStat st;
         if (!it->image[0] || sceIoGetstat(it->image_path, &st) < 0) it->image_path[0] = 0;
+
+        /* Extract subreddit: category label/term or link */
+        it->sub[0] = 0;
+        const char *cat_tag = strstr(e, "<category");
+        if (cat_tag && cat_tag < end) {
+            const char *lbl = strstr(cat_tag, "label=\"");
+            if (lbl && lbl < end) {
+                lbl += 7;
+                const char *q = strchr(lbl, '"');
+                if (q && q < end && q - lbl < (int)sizeof(it->sub)) {
+                    memcpy(it->sub, lbl, q - lbl);
+                    it->sub[q - lbl] = 0;
+                }
+            } else {
+                const char *trm = strstr(cat_tag, "term=\"");
+                if (trm && trm < end) {
+                    trm += 6;
+                    const char *q = strchr(trm, '"');
+                    if (q && q < end && q - trm + 3 < (int)sizeof(it->sub)) {
+                        snprintf(it->sub, sizeof(it->sub), "r/%.*s", (int)(q - trm), trm);
+                    }
+                }
+            }
+        }
+        if (!it->sub[0]) {
+            const char *lnk = strstr(e, "<link");
+            if (lnk && lnk < end) {
+                const char *r_sub = strstr(lnk, "/r/");
+                if (r_sub && r_sub < end) {
+                    r_sub += 1;
+                    const char *slash = strchr(r_sub + 2, '/');
+                    if (slash && slash < end && slash - r_sub < (int)sizeof(it->sub)) {
+                        memcpy(it->sub, r_sub, slash - r_sub);
+                        it->sub[slash - r_sub] = 0;
+                    }
+                }
+            }
+        }
+        if (!it->sub[0]) snprintf(it->sub, sizeof(it->sub), "r/vitahacks");
+
         ++k;
     }
     free(t);
@@ -164,6 +204,14 @@ static int worker(SceSize args, void *argp) {
         if (sceNetCtlInetGetState(&st) >= 0 && st == SCE_NETCTL_STATE_CONNECTED) break;
         sceKernelDelayThread(5 * 1000 * 1000);
     }
+    /* If this is the first boot with 3-sub multi news, force an immediate fetch */
+    SceIoStat mst;
+    if (sceIoGetstat("ux0:data/arcadehub/user/multi_news.v1", &mst) < 0) {
+        sceIoRemove(STAMP);
+        SceUID mf = sceIoOpen("ux0:data/arcadehub/user/multi_news.v1", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+        if (mf >= 0) sceIoClose(mf);
+    }
+
     unsigned long long last = 0, now = now_s();       /* when we last asked, in its own file */
     f = fopen(STAMP, "r");
     if (f) { if (fscanf(f, "%llu", &last) != 1) last = 0; fclose(f); }

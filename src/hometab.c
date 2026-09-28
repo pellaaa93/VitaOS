@@ -33,8 +33,8 @@ typedef struct {
     int resume;                               /* art is RetroArch's quick-resume snapshot */
 } Item;
 
-#define MAX_ITEMS 14
-#define MAX_NEWS_TILES 3
+#define MAX_ITEMS 32
+#define MAX_NEWS_TILES 10
 #define TILE 124.0f
 #define ROW_Y 318.0f
 #define GAP 22.0f
@@ -219,7 +219,7 @@ static void widgets(void) {
  * unread, after the first item once it has been seen (asked for 2026-09-26:
  * the news should lead to the Store's newest things). */
 static void add_news(void) {
-    static char ago[MAX_NEWS_TILES][32], by[MAX_NEWS_TILES][64];
+    static char ago[MAX_NEWS_TILES][32], by[MAX_NEWS_TILES][64], kicker[MAX_NEWS_TILES][64];
     for (int i = 0; i < news_count() && i < MAX_NEWS_TILES && nitems < MAX_ITEMS; ++i) {
         const NewsItem *n = news_get(i);
         unsigned int a = n->age_s;
@@ -229,7 +229,8 @@ static void add_news(void) {
         int app = store_match(n->title);
         snprintf(by[i], sizeof(by[i]), app >= 0 ? "In the Store now" : "%s", n->author);
         vita2d_texture *pic = n->image_path[0] ? ui_image(n->image_path) : NULL;   /* the post's own picture */
-        items[nitems++] = (Item){K_NEWS, i, n->title, "COMMUNITY NEWS  \xC2\xB7  r/vitahacks", ago[i], by[i], "",
+        snprintf(kicker[i], sizeof(kicker[i]), "COMMUNITY NEWS  \xC2\xB7  %s", n->sub[0] ? n->sub : "r/vitahacks");
+        items[nitems++] = (Item){K_NEWS, i, n->title, kicker[i], ago[i], by[i], "",
                                  pic, pic, RGBA8(255, 106, 51, 255), 0};
     }
 }
@@ -288,7 +289,7 @@ static int news_lead = -1;
  * new goes on the right-hand end. The order starts fresh with the app (VitaOS
  * restarts after every game) or hometab_reset. */
 #define KEY_LEN 96
-#define MAX_SHOWN 32
+#define MAX_SHOWN 64
 static char shown[MAX_SHOWN][KEY_LEN];              /* every tile shown this visit, in order */
 static int nshown;
 
@@ -414,7 +415,9 @@ static void news_reader(const Input *in) {
         if (ph > 380) ph = 380;
         draw_round_texture(pic, W - 48 - pw, y, pw, ph, 14, 0xFFFFFFFF);
     }
-    text(bold, tx, (int)y + 14, RGBA8(255, 120, 70, 255), 13, "COMMUNITY NEWS  \xC2\xB7  r/vitahacks");
+    char kicker_hdr[64];
+    snprintf(kicker_hdr, sizeof(kicker_hdr), "COMMUNITY NEWS  \xC2\xB7  %s", n->sub[0] ? n->sub : "r/vitahacks");
+    text(bold, tx, (int)y + 14, RGBA8(255, 120, 70, 255), 13, kicker_hdr);
     draw_wrapped_text(n->title, tx, (int)y + 44, tw, 24, 4, C_TEXT);
     int lines = (int)(text_w(bold, 24, n->title) / tw) + 1;
     if (lines > 4) lines = 4;
@@ -430,25 +433,84 @@ static void news_reader(const Input *in) {
         draw_action_button(tx, by, 260, 38, "X See it in the Store", 1, RGBA8(52, 168, 83, 255));
         by += 54;
     } else by += 14;
-    draw_wrapped_text(n->summary[0] ? n->summary : "This post is a link or a picture; open r/vitahacks on a phone to see the rest.",
+    char fallback_summary[128];
+    snprintf(fallback_summary, sizeof(fallback_summary), "This post is a link or a picture; open %s on a phone to see the rest.",
+             n->sub[0] ? n->sub : "Reddit");
+    draw_wrapped_text(n->summary[0] ? n->summary : fallback_summary,
                       tx, (int)by + 6, tw, 16, 14, C_TEXT);
 }
 
-static void draw_weather_glyph(float cx, float cy, int kind, float scale) {
+static void draw_weather_glyph(float cx, float cy, int kind, float scale, int anim) {
     unsigned int gc = kind == 0 ? RGBA8(250, 204, 21, 255) : kind == 2 ? RGBA8(96, 165, 250, 255) : kind == 3 ? RGBA8(186, 230, 253, 255) : RGBA8(203, 213, 225, 255);
+    if (!anim) {
+        if (kind == 0) {
+            vita2d_draw_fill_circle(cx, cy, 10.0f * scale, gc);
+        } else {
+            vita2d_draw_fill_circle(cx - 6.0f * scale, cy + 2.0f * scale, 8.0f * scale, gc);
+            vita2d_draw_fill_circle(cx + 5.0f * scale, cy - 1.0f * scale, 10.0f * scale, gc);
+            vita2d_draw_fill_circle(cx + 12.0f * scale, cy + 3.0f * scale, 6.0f * scale, gc);
+            vita2d_draw_rectangle(cx - 6.0f * scale, cy + 4.0f * scale, 18.0f * scale, 5.0f * scale, gc);
+            if (kind == 2) {
+                for (int d = -1; d <= 1; ++d)
+                    vita2d_draw_rectangle(cx + d * 7.0f * scale, cy + 12.0f * scale, 2.0f * scale, 5.0f * scale, gc);
+            } else if (kind == 3) {
+                for (int d = -1; d <= 1; ++d)
+                    vita2d_draw_fill_circle(cx + d * 8.0f * scale, cy + 14.0f * scale, 2.0f * scale, gc);
+            }
+        }
+        return;
+    }
+
+    /* Animated glyph: 60 FPS hardware accelerated procedural motion */
+    SceUInt64 tick = sceKernelGetProcessTimeWide();
+    float t = (float)(tick % 100000000ull) / 1000000.0f;
+
     if (kind == 0) {
-        vita2d_draw_fill_circle(cx, cy, 10.0f * scale, gc);
+        /* Sun: pulsing sun disc with rotating and breathing golden rays */
+        float pulse = sinf(t * 3.5f) * 1.0f * scale;
+        vita2d_draw_fill_circle(cx, cy, 10.0f * scale + pulse, gc);
+
+        float rot = t * 0.7f;
+        for (int i = 0; i < 8; ++i) {
+            float ang = rot + i * 0.785398f; /* 45 degrees */
+            float r1 = (13.5f + pulse * 0.5f) * scale;
+            float r2 = (18.0f + 1.8f * sinf(t * 4.5f + i * 1.2f)) * scale;
+            float x1 = cx + cosf(ang) * r1, y1 = cy + sinf(ang) * r1;
+            float x2 = cx + cosf(ang) * r2, y2 = cy + sinf(ang) * r2;
+            vita2d_draw_line(x1, y1, x2, y2, gc);
+            vita2d_draw_line(x1 + 0.5f, y1, x2 + 0.5f, y2, gc);
+        }
     } else {
-        vita2d_draw_fill_circle(cx - 6.0f * scale, cy + 2.0f * scale, 8.0f * scale, gc);
-        vita2d_draw_fill_circle(cx + 5.0f * scale, cy - 1.0f * scale, 10.0f * scale, gc);
-        vita2d_draw_fill_circle(cx + 12.0f * scale, cy + 3.0f * scale, 6.0f * scale, gc);
-        vita2d_draw_rectangle(cx - 6.0f * scale, cy + 4.0f * scale, 18.0f * scale, 5.0f * scale, gc);
+        /* Cloud base with gentle vertical bobbing motion */
+        float dy = sinf(t * 2.2f) * 2.0f * scale;
+        float cloud_y = cy + dy;
+
+        /* Floating cloud body */
+        vita2d_draw_fill_circle(cx - 6.0f * scale, cloud_y + 2.0f * scale, 8.0f * scale, gc);
+        vita2d_draw_fill_circle(cx + 5.0f * scale, cloud_y - 1.0f * scale, 10.0f * scale, gc);
+        vita2d_draw_fill_circle(cx + 12.0f * scale, cloud_y + 3.0f * scale, 6.0f * scale, gc);
+        vita2d_draw_rectangle(cx - 6.0f * scale, cloud_y + 4.0f * scale, 18.0f * scale, 5.0f * scale, gc);
+
         if (kind == 2) {
-            for (int d = -1; d <= 1; ++d)
-                vita2d_draw_rectangle(cx + d * 7.0f * scale, cy + 12.0f * scale, 2.0f * scale, 5.0f * scale, gc);
+            /* Rain: smooth looping falling raindrops slanted by wind */
+            unsigned int rc = RGBA8(96, 165, 250, 255);
+            for (int d = -1; d <= 1; ++d) {
+                float phase = fmodf(t * 2.5f + (d + 1) * 0.33f, 1.0f);
+                float drop_x = cx + d * 8.0f * scale - phase * 2.0f * scale;
+                float drop_y = cloud_y + (10.0f + phase * 16.0f) * scale;
+                vita2d_draw_line(drop_x, drop_y, drop_x - 1.5f * scale, drop_y + 4.5f * scale, rc);
+                vita2d_draw_line(drop_x + 0.5f, drop_y, drop_x - 1.0f * scale, drop_y + 4.5f * scale, rc);
+            }
         } else if (kind == 3) {
-            for (int d = -1; d <= 1; ++d)
-                vita2d_draw_fill_circle(cx + d * 8.0f * scale, cy + 14.0f * scale, 2.0f * scale, gc);
+            /* Snow: snowflakes gently drifting down and swaying horizontally */
+            unsigned int sc_col = RGBA8(224, 242, 254, 255);
+            for (int d = -1; d <= 1; ++d) {
+                float phase = fmodf(t * 1.0f + (d + 1) * 0.35f, 1.0f);
+                float sway = sinf(t * 3.0f + (d + 1) * 2.0f) * 3.5f * scale;
+                float snow_x = cx + d * 8.0f * scale + sway;
+                float snow_y = cloud_y + (10.0f + phase * 16.0f) * scale;
+                vita2d_draw_fill_circle(snow_x, snow_y, 2.0f * scale, sc_col);
+            }
         }
     }
 }
@@ -523,7 +585,7 @@ static void weather_modal_draw(const Input *in) {
     int tw = text_w(bold, 40, tstr);
 
     int cur_kind = weather_kind(cur_code);
-    draw_weather_glyph(px + 32 + tw + 28, py + 104, cur_kind, 1.3f);
+    draw_weather_glyph(px + 32 + tw + 28, py + 104, cur_kind, 1.3f, 1);
 
     text(bold, (int)px + 32 + tw + 60, (int)py + 106, C_TEXT, 17, weather_desc(cur_code));
     char hltxt[64];
@@ -561,7 +623,7 @@ static void weather_modal_draw(const Input *in) {
         text(bold, (int)cx + ((int)col_w - dtw) / 2, (int)col_y + 26, on ? C_TEXT : C_DIM, 14, dtitle);
 
         int dkind = weather_kind(days[d].code);
-        draw_weather_glyph(cx + col_w / 2.0f, col_y + 64, dkind, 1.1f);
+        draw_weather_glyph(cx + col_w / 2.0f, col_y + 64, dkind, 1.1f, on);
 
         const char *desc = weather_desc(days[d].code);
         int cw = text_w(font, 13, desc);
