@@ -347,8 +347,16 @@ static int img_worker(SceSize args, void *argp) {
                 t = dot && (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg")) ? vita2d_load_JPEG_file(path)
                                                                                   : vita2d_load_PNG_file(path);
             if (t && round) round_corners(t, 0.22f);
-            imgs[pick].tex = t;
-            imgs[pick].state = t ? 3 : 4;
+            if (img_lock >= 0) sceKernelWaitSema(img_lock, 1, NULL);
+            if (!imgs[pick].path[0]) {
+                if (t) vita2d_free_texture(t);
+                imgs[pick].tex = NULL;
+                imgs[pick].state = 0;
+            } else {
+                imgs[pick].tex = t;
+                imgs[pick].state = t ? 3 : 4;
+            }
+            if (img_lock >= 0) sceKernelSignalSema(img_lock, 1);
         }
     }
     return 0;
@@ -576,21 +584,14 @@ void draw_shimmer(float x, float y, float w, float h) {
 
 /* Forget a path (the file changed, or a failed load should be tried again). */
 void ui_image_forget(const char *path) {
-    for (int i = 0; i < IMGS; ++i)
-        if ((imgs[i].state == 3 || imgs[i].state == 4) && !strcmp(imgs[i].path, path)) {
-            if (imgs[i].tex && nfree < IMGS) to_free[nfree++] = imgs[i].tex;
-            imgs[i].tex = NULL;
-            imgs[i].state = 0;
-        }
-}
-
-void ui_image_forget_prefix(const char *prefix) {
-    if (!prefix || !*prefix) return;
-    int len = (int)strlen(prefix);
+    if (!path || !*path) return;
+    if (img_lock >= 0) sceKernelWaitSema(img_lock, 1, NULL);
     for (int i = 0; i < IMGS; ++i) {
-        if (!strncmp(imgs[i].path, prefix, len)) {
+        if (!strcmp(imgs[i].path, path)) {
             if (imgs[i].state == 1) {
                 imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 2) {
                 imgs[i].path[0] = 0;
             } else if (imgs[i].state == 3 || imgs[i].state == 4) {
                 if (imgs[i].tex && nfree < IMGS) to_free[nfree++] = imgs[i].tex;
@@ -600,6 +601,29 @@ void ui_image_forget_prefix(const char *prefix) {
             }
         }
     }
+    if (img_lock >= 0) sceKernelSignalSema(img_lock, 1);
+}
+
+void ui_image_forget_prefix(const char *prefix) {
+    if (!prefix || !*prefix) return;
+    int len = (int)strlen(prefix);
+    if (img_lock >= 0) sceKernelWaitSema(img_lock, 1, NULL);
+    for (int i = 0; i < IMGS; ++i) {
+        if (!strncmp(imgs[i].path, prefix, len)) {
+            if (imgs[i].state == 1) {
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 2) {
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 3 || imgs[i].state == 4) {
+                if (imgs[i].tex && nfree < IMGS) to_free[nfree++] = imgs[i].tex;
+                imgs[i].tex = NULL;
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            }
+        }
+    }
+    if (img_lock >= 0) sceKernelSignalSema(img_lock, 1);
 }
 
 static void free_evicted(void) {

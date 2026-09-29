@@ -378,6 +378,7 @@ void hometab_reset(void) { sel = 0; anchor_kind = -1; nshown = 0; player_moved =
 
 void hometab_leave(void) {
     ui_image_forget_prefix("ux0:data/arcadehub/news");
+    ui_image_forget_prefix("ux0:data/arcadehub/states");
     for (int i = 0; i < nitems; ++i) {
         if (items[i].kind == K_NEWS) {
             items[i].tile = NULL;

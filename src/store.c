@@ -741,7 +741,11 @@ static vita2d_texture *shot_of(App *a, int k) {
 
 static void open_detail(int app) { cur = app; detail = 1; job_stage = 0; }
 
-void store_leave(void) { if (installing < 0) { detail = 0; job_stage = 0; } chips = 0; }
+void store_leave(void) {
+    if (installing < 0) { detail = 0; job_stage = 0; }
+    chips = 0;
+    ui_image_forget_prefix(DIR);
+}
 
 const char *store_hint(void) {
     if (detail) return installing >= 0 ? "Installing\xE2\x80\xA6" : has_update(&apps[cur]) ? "X update    O back" : "X install    O back";

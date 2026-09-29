@@ -673,6 +673,7 @@ int main(void) {
             if (was == T_PLAY) play_leave();
             if (was == T_MOVIES) movies_leave();
             if (was == T_APPS) { camera_leave(); memo_leave(); }
+            if (was == T_DOWNLOADS) store_leave();
             in.pressed = 0;          /* the switch is not also a press inside the new tab */
         }
         /* A long copy or download must not be cut off by auto-standby. */

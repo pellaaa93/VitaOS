@@ -302,6 +302,7 @@ void downloads_update(const Input *in) {
     if (in_store && ready) {
         if (store_update(in)) return;
         in_store = 0;
+        store_leave();
         return;
     }
     if (!ready) {
