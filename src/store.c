@@ -1083,19 +1083,22 @@ static int store_match_uncached(const char *headline);
 
 /* Home asks every frame, for every news tile: remember the answers (the scan
  * over ~1,100 names cost Home ~10 ms a frame, 60 fps down to 39). */
+#define STORE_MEMO_MAX 64
 int store_match(const char *headline) {
-    static struct { unsigned int hash; int napps, result; } memo[8];
+    if (!headline || !*headline || !napps) return -1;
+    static struct { unsigned int hash; int napps, result; } memo[STORE_MEMO_MAX];
     static int next;
     unsigned int h = 2166136261u;
     for (const char *c = headline; *c; ++c) h = (h ^ (unsigned char)*c) * 16777619u;
-    for (int i = 0; i < 8; ++i) if (memo[i].hash == h && memo[i].napps == napps) return memo[i].result;
+    for (int i = 0; i < STORE_MEMO_MAX; ++i) if (memo[i].hash == h && memo[i].napps == napps) return memo[i].result;
     int r = store_match_uncached(headline);
     memo[next].hash = h; memo[next].napps = napps; memo[next].result = r;
-    next = (next + 1) % 8;
+    next = (next + 1) % STORE_MEMO_MAX;
     return r;
 }
 
 static int store_match_uncached(const char *headline) {
+    if (!headline || !*headline || !napps) return -1;
     char h[256];
     lower_simple(headline, h + 1, sizeof(h) - 2);
     h[0] = ' ';
