@@ -15,6 +15,7 @@
 #include <psp2/common_dialog.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/registrymgr.h>
 
 #include "ui.h"
 #include "lang.h"
@@ -77,6 +78,49 @@ void ui_theme_load(void) {
     ui_theme_set_accent(a);
     theme_bg = bgv < 0 || bgv > THEME_BG_WALLPAPER ? THEME_BG_AURORA : (ThemeBg)bgv;
     if (theme_bg == THEME_BG_WALLPAPER && strcmp(w, "-")) snprintf(theme_wallpaper, sizeof(theme_wallpaper), "%s", w);
+}
+
+#define CLOCK_CFG "ux0:data/arcadehub/user/clock.cfg"
+static UiTimeFormat time_format = UI_TIME_12H;
+static int time_format_loaded = 0;
+
+void ui_time_format_load(void) {
+    if (time_format_loaded) return;
+    time_format_loaded = 1;
+    char b[16] = {0};
+    SceUID fd = sceIoOpen(CLOCK_CFG, SCE_O_RDONLY, 0);
+    if (fd >= 0) {
+        sceIoRead(fd, b, sizeof(b) - 1);
+        sceIoClose(fd);
+        int v = 0;
+        if (sscanf(b, "%d", &v) == 1) {
+            time_format = (v == 1) ? UI_TIME_24H : UI_TIME_12H;
+            return;
+        }
+    }
+    int sys_fmt = 0;
+    if (sceRegMgrGetKeyInt("/CONFIG/DATE", "time_format", &sys_fmt) >= 0 && sys_fmt == 1) {
+        time_format = UI_TIME_24H;
+    } else {
+        time_format = UI_TIME_12H;
+    }
+}
+
+UiTimeFormat ui_time_format(void) {
+    if (!time_format_loaded) ui_time_format_load();
+    return time_format;
+}
+
+void ui_set_time_format(UiTimeFormat fmt) {
+    time_format = fmt;
+    time_format_loaded = 1;
+    char b[16];
+    int n = snprintf(b, sizeof(b), "%d\n", fmt == UI_TIME_24H ? 1 : 0);
+    ui_save(CLOCK_CFG, b, n, 0);
+}
+
+const char *ui_time_format_name(UiTimeFormat fmt) {
+    return fmt == UI_TIME_24H ? "24-hour" : "12-hour (AM/PM)";
 }
 
 /* The most vivid colour that covers a good part of the art: hue buckets
@@ -314,9 +358,17 @@ static int img_worker(SceSize args, void *argp) {
                 t = jpeg ? vita2d_load_JPEG_file(path) : vita2d_load_PNG_file(path);
             }
             if (t && round) round_corners(t, 0.22f);
-            imgs[pick].tex = t;
-            if (!t) { imgs[pick].tries++; imgs[pick].failed_at = sceKernelGetProcessTimeWide(); }
-            imgs[pick].state = t ? 3 : 4;
+            if (img_lock >= 0) sceKernelWaitSema(img_lock, 1, NULL);
+            if (!imgs[pick].path[0]) {
+                if (t) vita2d_free_texture(t);
+                imgs[pick].tex = NULL;
+                imgs[pick].state = 0;
+            } else {
+                imgs[pick].tex = t;
+                if (!t) { imgs[pick].tries++; imgs[pick].failed_at = sceKernelGetProcessTimeWide(); }
+                imgs[pick].state = t ? 3 : 4;
+            }
+            if (img_lock >= 0) sceKernelSignalSema(img_lock, 1);
         }
     }
     return 0;
@@ -555,12 +607,46 @@ void draw_shimmer(float x, float y, float w, float h) {
 
 /* Forget a path (the file changed, or a failed load should be tried again). */
 void ui_image_forget(const char *path) {
-    for (int i = 0; i < IMGS; ++i)
-        if ((imgs[i].state == 3 || imgs[i].state == 4) && !strcmp(imgs[i].path, path)) {
-            if (imgs[i].tex && nfree < IMGS) to_free[nfree++] = imgs[i].tex;
-            imgs[i].tex = NULL;
-            imgs[i].state = 0;
+    if (!path || !*path) return;
+    if (img_lock >= 0) sceKernelWaitSema(img_lock, 1, NULL);
+    for (int i = 0; i < IMGS; ++i) {
+        if (!strcmp(imgs[i].path, path)) {
+            if (imgs[i].state == 1) {
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 2) {
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 3 || imgs[i].state == 4) {
+                if (imgs[i].tex && nfree < IMGS) to_free[nfree++] = imgs[i].tex;
+                imgs[i].tex = NULL;
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            }
         }
+    }
+    if (img_lock >= 0) sceKernelSignalSema(img_lock, 1);
+}
+
+void ui_image_forget_prefix(const char *prefix) {
+    if (!prefix || !*prefix) return;
+    int len = (int)strlen(prefix);
+    if (img_lock >= 0) sceKernelWaitSema(img_lock, 1, NULL);
+    for (int i = 0; i < IMGS; ++i) {
+        if (!strncmp(imgs[i].path, prefix, len)) {
+            if (imgs[i].state == 1) {
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 2) {
+                imgs[i].path[0] = 0;
+            } else if (imgs[i].state == 3 || imgs[i].state == 4) {
+                if (imgs[i].tex && nfree < IMGS) to_free[nfree++] = imgs[i].tex;
+                imgs[i].tex = NULL;
+                imgs[i].state = 0;
+                imgs[i].path[0] = 0;
+            }
+        }
+    }
+    if (img_lock >= 0) sceKernelSignalSema(img_lock, 1);
 }
 
 static void free_evicted(void) {
@@ -592,6 +678,8 @@ static int save_worker(SceSize args, void *argp) {
             int len = saves[0].len, append = saves[0].append;
             memmove(&saves[0], &saves[1], (--nsaves) * sizeof(saves[0]));
             sceKernelSignalSema(save_lock, 1);
+            sceIoMkdir("ux0:data/arcadehub", 0777);
+            sceIoMkdir("ux0:data/arcadehub/user", 0777);
             SceUID fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | (append ? SCE_O_APPEND : SCE_O_TRUNC), 0666);
             if (fd >= 0) { if (len) sceIoWrite(fd, data, len); sceIoClose(fd); }
             free(data);
@@ -865,6 +953,7 @@ void ui_init(void) {
     bold = uifont_load("app0:assets/Inter-Bold.ttf");
     uifont_set_fallback(uifont_load("app0:assets/NotoSansJP-Subset.otf"));   /* kana and common kanji */
     ui_theme_load();
+    ui_time_format_load();
 }
 
 #define REPEAT_DELAY_US 350000
@@ -1063,9 +1152,14 @@ static int wifi_connected(void) {
 static void header_clock_text(char *out, int max, int *right_x) {
     SceDateTime t;
     sceRtcGetCurrentClockLocalTime(&t);
-    int h = t.hour % 12 ? t.hour % 12 : 12;
-    snprintf(out, max, "%d:%02d %s    %d%%%s", h, t.minute, t.hour < 12 ? "AM" : "PM",
-             scePowerGetBatteryLifePercent(), scePowerIsBatteryCharging() ? " +" : "");
+    if (ui_time_format() == UI_TIME_24H) {
+        snprintf(out, max, "%02d:%02d    %d%%%s", t.hour, t.minute,
+                 scePowerGetBatteryLifePercent(), scePowerIsBatteryCharging() ? " +" : "");
+    } else {
+        int h = t.hour % 12 ? t.hour % 12 : 12;
+        snprintf(out, max, "%d:%02d %s    %d%%%s", h, t.minute, t.hour < 12 ? "AM" : "PM",
+                 scePowerGetBatteryLifePercent(), scePowerIsBatteryCharging() ? " +" : "");
+    }
     if (right_x) *right_x = W - 30 - text_w(font, 18, out);
 }
 

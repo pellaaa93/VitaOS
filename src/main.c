@@ -609,6 +609,8 @@ static int boot_video(void) {
 }
 
 int main(void) {
+    sceIoMkdir("ux0:data/arcadehub", 0777);
+    sceIoMkdir("ux0:data/arcadehub/user", 0777);
     ssl_threads_init();                      /* before any thread: OpenSSL 1.0.2 needs its locks (ssl_locks.c) */
     vita2d_init_advanced(4 * 1024 * 1024);   /* the per-frame vertex pool: the new visuals need more than 1 MB */
     vita2d_set_clear_color(C_BG);
@@ -713,6 +715,7 @@ int main(void) {
             search_close();
             settings_leave();
             store_leave();
+            if (tab == T_HOME) hometab_leave();
             if (tab == T_MOVIES) movies_leave();
             camera_leave();
             memo_leave();
@@ -751,9 +754,11 @@ int main(void) {
         if (tab != was) {
             STAGE("tab switch");
             { char b[4]; int n = snprintf(b, sizeof(b), "%d", tab); ui_save(LAST_TAB, b, n, 0); }
+            if (was == T_HOME) hometab_leave();
             if (was == T_PLAY) play_leave();
             if (was == T_MOVIES) movies_leave();
             if (was == T_APPS) { camera_leave(); memo_leave(); }
+            if (was == T_DOWNLOADS) store_leave();
             in.pressed = 0;          /* the switch is not also a press inside the new tab */
         }
         /* A long copy or download must not be cut off by auto-standby. */

@@ -14,12 +14,12 @@
 #include "news.h"
 #include "store.h"
 
-#define FEED "https://www.reddit.com/r/vitahacks/.rss"
+#define FEED "https://www.reddit.com/r/vitahacks+PSVita+VitaPiracy/.rss"
 #define CACHE "ux0:data/arcadehub/news.rss"
 #define SEEN "ux0:data/arcadehub/user/news-seen.txt"
 #define STAMP "ux0:data/arcadehub/news.time"
 #define NEWS_DIR "ux0:data/arcadehub/news"
-#define MAX_NEWS 4
+#define MAX_NEWS 16
 
 static NewsItem items[MAX_NEWS];
 static volatile int nitems, ready;
@@ -93,6 +93,40 @@ static int has_word(const char *s, const char *w) {   /* case-insensitive substr
     return 0;
 }
 
+static const char *clean_title_start(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    while (*s == '[' || *s == '(') {
+        const char *close = (*s == '[') ? strchr(s, ']') : strchr(s, ')');
+        if (!close) break;
+        s = close + 1;
+        while (*s == ' ' || *s == '\t' || *s == '-' || *s == ':') s++;
+    }
+    return s;
+}
+
+static int title_similar(const char *a, const char *b) {
+    if (!strcasecmp(a, b)) return 1;
+    const char *ca = clean_title_start(a);
+    const char *cb = clean_title_start(b);
+    if (!strcasecmp(ca, cb)) return 1;
+    char na[160], nb[160];
+    int oa = 0, ob = 0;
+    for (; *ca && oa < 159; ca++) {
+        if ((*ca >= 'a' && *ca <= 'z') || (*ca >= '0' && *ca <= '9')) na[oa++] = *ca;
+        else if (*ca >= 'A' && *ca <= 'Z') na[oa++] = *ca + ('a' - 'A');
+    }
+    na[oa] = 0;
+    for (; *cb && ob < 159; cb++) {
+        if ((*cb >= 'a' && *cb <= 'z') || (*cb >= '0' && *cb <= '9')) nb[ob++] = *cb;
+        else if (*cb >= 'A' && *cb <= 'Z') nb[ob++] = *cb + ('a' - 'A');
+    }
+    nb[ob] = 0;
+    if (oa && !strcmp(na, nb)) return 1;
+    int min_o = oa < ob ? oa : ob;
+    if (min_o >= 14 && !strncmp(na, nb, min_o)) return 1;
+    return 0;
+}
+
 static int boring(const char *title) {               /* threads, rules, meta */
     static const char *const words[] = {"questions thread", "rules", "weekly", "megathread", "moderator"};
     for (int k = 0; k < 5; ++k) if (has_word(title, words[k])) return 1;
@@ -115,10 +149,26 @@ static void parse(void) {
     for (char *e = strstr(t, "<entry>"); e && k < MAX_NEWS; e = strstr(e + 7, "<entry>")) {
         char *end = strstr(e, "</entry>");
         if (!end) break;
+        char temp_title[160];
+        grab(e, end, "title", temp_title, sizeof(temp_title));
+        if (boring(temp_title)) continue;
+        char temp_id[64];
+        grab(e, end, "id", temp_id, sizeof(temp_id));
+        int dup = 0;
+        for (int j = 0; j < k; ++j) {
+            if ((temp_id[0] && !strcmp(got[j].id, temp_id)) ||
+                (temp_title[0] && title_similar(got[j].title, temp_title))) {
+                dup = 1;
+                break;
+            }
+        }
+        if (dup) continue;
+
         NewsItem *it = &got[k];
         memset(it, 0, sizeof(*it));
-        grab(e, end, "title", it->title, sizeof(it->title));
-        if (boring(it->title)) continue;
+        snprintf(it->title, sizeof(it->title), "%s", temp_title);
+        snprintf(it->id, sizeof(it->id), "%s", temp_id);
+
         char upd[40];
         grab(e, end, "updated", upd, sizeof(upd));
         unsigned long long when = iso_s(upd);
@@ -129,7 +179,6 @@ static void parse(void) {
         char *tail = strstr(it->summary, "submitted by");   /* Reddit's footer: by, [link], [comments] */
         if (tail) *tail = 0;
         for (int L = strlen(it->summary); L && it->summary[L - 1] == ' '; --L) it->summary[L - 1] = 0;
-        grab(e, end, "id", it->id, sizeof(it->id));
         const char *th = strstr(e, "<media:thumbnail url=\"");   /* the post's picture, if it has one */
         if (th && th < end) {
             th += 22;
@@ -143,6 +192,46 @@ static void parse(void) {
         snprintf(it->image_path, sizeof(it->image_path), NEWS_DIR "/%s.jpg", it->id);
         SceIoStat st;
         if (!it->image[0] || sceIoGetstat(it->image_path, &st) < 0) it->image_path[0] = 0;
+
+        /* Extract subreddit: category label/term or link */
+        it->sub[0] = 0;
+        const char *cat_tag = strstr(e, "<category");
+        if (cat_tag && cat_tag < end) {
+            const char *lbl = strstr(cat_tag, "label=\"");
+            if (lbl && lbl < end) {
+                lbl += 7;
+                const char *q = strchr(lbl, '"');
+                if (q && q < end && q - lbl < (int)sizeof(it->sub)) {
+                    memcpy(it->sub, lbl, q - lbl);
+                    it->sub[q - lbl] = 0;
+                }
+            } else {
+                const char *trm = strstr(cat_tag, "term=\"");
+                if (trm && trm < end) {
+                    trm += 6;
+                    const char *q = strchr(trm, '"');
+                    if (q && q < end && q - trm + 3 < (int)sizeof(it->sub)) {
+                        snprintf(it->sub, sizeof(it->sub), "r/%.*s", (int)(q - trm), trm);
+                    }
+                }
+            }
+        }
+        if (!it->sub[0]) {
+            const char *lnk = strstr(e, "<link");
+            if (lnk && lnk < end) {
+                const char *r_sub = strstr(lnk, "/r/");
+                if (r_sub && r_sub < end) {
+                    r_sub += 1;
+                    const char *slash = strchr(r_sub + 2, '/');
+                    if (slash && slash < end && slash - r_sub < (int)sizeof(it->sub)) {
+                        memcpy(it->sub, r_sub, slash - r_sub);
+                        it->sub[slash - r_sub] = 0;
+                    }
+                }
+            }
+        }
+        if (!it->sub[0]) snprintf(it->sub, sizeof(it->sub), "r/vitahacks");
+
         ++k;
     }
     free(t);
@@ -164,6 +253,14 @@ static int worker(SceSize args, void *argp) {
         if (sceNetCtlInetGetState(&st) >= 0 && st == SCE_NETCTL_STATE_CONNECTED) break;
         sceKernelDelayThread(5 * 1000 * 1000);
     }
+    /* If this is the first boot with 3-sub multi news, force an immediate fetch */
+    SceIoStat mst;
+    if (sceIoGetstat("ux0:data/arcadehub/user/multi_news.v1", &mst) < 0) {
+        sceIoRemove(STAMP);
+        SceUID mf = sceIoOpen("ux0:data/arcadehub/user/multi_news.v1", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+        if (mf >= 0) sceIoClose(mf);
+    }
+
     unsigned long long last = 0, now = now_s();       /* when we last asked, in its own file */
     f = fopen(STAMP, "r");
     if (f) { if (fscanf(f, "%llu", &last) != 1) last = 0; fclose(f); }
@@ -176,10 +273,22 @@ static int worker(SceSize args, void *argp) {
     sceIoMkdir(NEWS_DIR, 0777);
     for (int i = 0; i < nitems; ++i) {
         NewsItem *it = &items[i];
-        if (!it->image[0] || it->image_path[0]) continue;
+        if (!it->image[0] || it->image_path[0] || strstr(it->image, ".gif") || strstr(it->image, ".gifv") ||
+            strstr(it->image, ".mp4") || strstr(it->image, ".webm")) continue;
         char path[80];
         snprintf(path, sizeof(path), NEWS_DIR "/%s.jpg", it->id);
-        if (store_fetch(it->image, path) >= 0) snprintf(it->image_path, sizeof(it->image_path), "%s", path);
+        if (store_fetch(it->image, path) >= 0) {
+            SceUID vf = sceIoOpen(path, SCE_O_RDONLY, 0);
+            if (vf >= 0) {
+                unsigned char magic[4] = {0};
+                sceIoRead(vf, magic, 4);
+                sceIoClose(vf);
+                int is_jpeg = (magic[0] == 0xFF && magic[1] == 0xD8);
+                int is_png = (magic[0] == 0x89 && magic[1] == 'P' && magic[2] == 'N' && magic[3] == 'G');
+                if (is_jpeg || is_png) snprintf(it->image_path, sizeof(it->image_path), "%s", path);
+                else sceIoRemove(path);
+            }
+        }
     }
     return sceKernelExitDeleteThread(0);
 }

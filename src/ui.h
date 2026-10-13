@@ -92,6 +92,7 @@ void ui_ambient(float strength);   /* PS5-style drifting glow, ribbons, motes */
  * (or if the file is missing). Cached; the least recently used are dropped. */
 vita2d_texture *ui_image(const char *path);
 void ui_image_forget(const char *path);
+void ui_image_forget_prefix(const char *prefix);
 int ui_image_pending(const char *path);
 void draw_shimmer(float x, float y, float w, float h);
 void draw_gradient(float x, float y, float w, float h, unsigned int tl, unsigned int tr, unsigned int bl, unsigned int br);
@@ -130,6 +131,13 @@ ThemeBg ui_theme_bg(void);
 const char *ui_theme_bg_name(ThemeBg bg);
 const char *ui_theme_wallpaper(void);       /* the chosen file's name, or "" */
 void ui_theme_load(void);                   /* theme.cfg -> the state above; called once, from ui_init */
+
+/* Clock format: 12-hour (AM/PM) or 24-hour. */
+typedef enum { UI_TIME_12H, UI_TIME_24H } UiTimeFormat;
+UiTimeFormat ui_time_format(void);
+void ui_set_time_format(UiTimeFormat fmt);
+const char *ui_time_format_name(UiTimeFormat fmt);
+void ui_time_format_load(void);
 
 /* A notice in the top-right corner for a few seconds; safe from any thread. */
 void ui_toast(const char *text, unsigned int color);

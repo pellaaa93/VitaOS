@@ -34,8 +34,8 @@ typedef struct {
     int resume;                               /* art is RetroArch's quick-resume snapshot */
 } Item;
 
-#define MAX_ITEMS 14
-#define MAX_NEWS_TILES 3
+#define MAX_ITEMS 32
+#define MAX_NEWS_TILES 10
 #define TILE 124.0f
 #define ROW_Y 318.0f
 #define GAP 22.0f
@@ -58,6 +58,10 @@ static int player_moved;
 static int swiping;                                 /* a finger is dragging the row */
 static int reading = -1;                            /* the news post open in the reader */
 static float read_scroll;
+static int focus_widget;                            /* focus on weather widget */
+static int weather_modal;                           /* detailed 4-day forecast pop-up modal */
+static int forecast_sel;                            /* day selected in modal (0..3) */
+
 
 static int tab_hidden(int movies);
 static void add_movie(void) {
@@ -176,9 +180,14 @@ static void widgets(void) {
     if (dls) h += 44;
     vita2d_draw_rectangle(x, y, w, h, RGBA8(18, 21, 30, 170));
     vita2d_draw_rectangle(x, y, w, 1, RGBA8(255, 255, 255, 28));
-    snprintf(line, sizeof(line), "%d:%02d", t.hour % 12 ? t.hour % 12 : 12, t.minute);
-    text(bold, x + 18, y + 50, C_TEXT, 40, line);
-    text(font, x + 22 + text_w(bold, 40, line), y + 50, C_DIM, 16, t.hour < 12 ? "AM" : "PM");
+    if (ui_time_format() == UI_TIME_24H) {
+        snprintf(line, sizeof(line), "%02d:%02d", t.hour, t.minute);
+        text(bold, x + 18, y + 50, C_TEXT, 40, line);
+    } else {
+        snprintf(line, sizeof(line), "%d:%02d", t.hour % 12 ? t.hour % 12 : 12, t.minute);
+        text(bold, x + 18, y + 50, C_TEXT, 40, line);
+        text(font, x + 22 + text_w(bold, 40, line), y + 50, C_DIM, 16, t.hour < 12 ? "AM" : "PM");
+    }
     snprintf(small, sizeof(small), "%s, %s %d", tr(days[dow % 7]), tr(months[(t.month + 11) % 12]), t.day);
     text(font, x + 20, y + 76, C_DIM, 15, small);
     int pct = scePowerGetBatteryLifePercent(), mins = scePowerGetBatteryLifeTime();
@@ -190,6 +199,10 @@ static void widgets(void) {
     text(font, x + 90, y + 95, pct < 15 ? C_BAD : C_DIM, 14, small);
     int yy = y + 104;
     if (have_wx) {                           /* a small glyph, then the words */
+        if (focus_widget) {
+            draw_focus_r(x + 8, yy + 2, w - 16, 46, 1.0f, 8);
+            draw_round_rect(x + 8, yy + 2, w - 16, 46, 8, RGBA8(255, 255, 255, 26));
+        }
         vita2d_draw_rectangle(x + 16, yy, w - 32, 1, RGBA8(255, 255, 255, 20));
         unsigned int gc = wkind == 0 ? RGBA8(250, 204, 21, 255) : wkind == 2 ? RGBA8(96, 165, 250, 255) : RGBA8(203, 213, 225, 255);
         if (wkind == 0) vita2d_draw_fill_circle(x + 27, yy + 19, 6, gc);
@@ -202,6 +215,7 @@ static void widgets(void) {
         text_fit(font, x + 42, yy + 43, C_DIM, 13, wsub, w - 58);
         yy += 50;
     }
+
     if (*np) {
         vita2d_draw_rectangle(x + 16, yy, w - 32, 1, RGBA8(255, 255, 255, 20));
         text_fit(font, x + 20, yy + 26, C_TEXT, 15, np, w - 40);
@@ -222,9 +236,17 @@ static void widgets(void) {
  * unread, after the first item once it has been seen (asked for 2026-09-26:
  * the news should lead to the Store's newest things). */
 static void add_news(void) {
-    static char ago[MAX_NEWS_TILES][32], by[MAX_NEWS_TILES][64];
+    static char ago[MAX_NEWS_TILES][32], by[MAX_NEWS_TILES][64], kicker[MAX_NEWS_TILES][64];
     for (int i = 0; i < news_count() && i < MAX_NEWS_TILES && nitems < MAX_ITEMS; ++i) {
         const NewsItem *n = news_get(i);
+        if (!n || !n->title[0]) continue;
+        int already = 0;
+        for (int j = 0; j < nitems; ++j) {
+            if (items[j].kind == K_NEWS && !strcasecmp(items[j].title, n->title)) {
+                already = 1; break;
+            }
+        }
+        if (already) continue;
         unsigned int a = n->age_s;
         if (a < 3600) snprintf(ago[i], sizeof(ago[i]), "%u min ago", a / 60 ? a / 60 : 1);
         else if (a < 86400) snprintf(ago[i], sizeof(ago[i]), "%u h ago", a / 3600);
@@ -232,7 +254,8 @@ static void add_news(void) {
         int app = store_match(n->title);
         snprintf(by[i], sizeof(by[i]), app >= 0 ? "In the Store now" : "%s", n->author);
         vita2d_texture *pic = n->image_path[0] ? ui_image(n->image_path) : NULL;   /* the post's own picture */
-        items[nitems++] = (Item){K_NEWS, i, n->title, "COMMUNITY NEWS  \xC2\xB7  r/vitahacks", ago[i], by[i], "",
+        snprintf(kicker[i], sizeof(kicker[i]), "COMMUNITY NEWS  \xC2\xB7  %s", n->sub[0] ? n->sub : "r/vitahacks");
+        items[nitems++] = (Item){K_NEWS, i, n->title, kicker[i], ago[i], by[i], "",
                                  pic, pic, RGBA8(255, 106, 51, 255), 0};
     }
 }
@@ -311,7 +334,7 @@ static int news_lead = -1;
  * new goes on the right-hand end. The order starts fresh with the app (VitaOS
  * restarts after every game) or hometab_reset. */
 #define KEY_LEN 96
-#define MAX_SHOWN 32
+#define MAX_SHOWN 64
 static char shown[MAX_SHOWN][KEY_LEN];              /* every tile shown this visit, in order */
 static int nshown;
 
@@ -320,6 +343,7 @@ static int nshown;
  * playing, so keying it by title moved it to the end on every new album. */
 static void item_key(const Item *it, char *out) {
     if (it->kind == K_MOVIE || it->kind == K_MUSIC || it->kind == K_WEEK || it->kind == K_UPD) snprintf(out, KEY_LEN, "%d", it->kind);
+    else if (it->kind == K_NEWS) snprintf(out, KEY_LEN, "%d|%d|%s", it->kind, it->index, it->title ? it->title : "");
     else snprintf(out, KEY_LEN, "%d|%s", it->kind, it->title ? it->title : "");
 }
 
@@ -388,16 +412,31 @@ static void backdrop(vita2d_texture *t, int alpha) {
     vita2d_draw_texture_tint_scale(t, x, y, sc, sc, RGBA8(255, 255, 255, alpha));
 }
 
-void hometab_reset(void) { sel = 0; anchor_kind = -1; nshown = 0; player_moved = 0; }
+void hometab_reset(void) { sel = 0; anchor_kind = -1; nshown = 0; player_moved = 0; focus_widget = 0; weather_modal = 0; forecast_sel = 0; }
+
+void hometab_leave(void) {
+    ui_image_forget_prefix("ux0:data/arcadehub/news");
+    ui_image_forget_prefix("ux0:data/arcadehub/states");
+    for (int i = 0; i < nitems; ++i) {
+        if (items[i].kind == K_NEWS) {
+            items[i].tile = NULL;
+            items[i].art = NULL;
+        }
+    }
+    back_prev = -1;
+    back_mix = 1;
+}
 
 int hometab_wants_tab(void) { int t = want_tab; want_tab = -1; return t; }
 
 const char *hometab_hint(void) {
+    if (weather_modal) return "<- -> select day    O close";
     if (reading >= 0) {
         const NewsItem *n = news_get(reading);
         return n && store_match(n->title) >= 0 ? "X see it in the Store    \xE2\x86\x91 \xE2\x86\x93 scroll    O back"
                                                : "\xE2\x86\x91 \xE2\x86\x93 scroll    O back";
     }
+    if (focus_widget) return "X 4-day forecast    O cancel";
     if (!nitems) return "L R tabs";
     switch (items[sel].kind) {
     case K_MOVIE: return "X resume   <- -> choose   L R tabs";
@@ -408,6 +447,8 @@ const char *hometab_hint(void) {
     default: return "X play   <- -> choose   L R tabs";
     }
 }
+
+
 
 /* The news reader: a full page for one post (asked for 2026-09-26: the old
  * message box was cramped). O closes it; X opens the app in the Store when
@@ -435,7 +476,9 @@ static void news_reader(const Input *in) {
         if (ph > 380) ph = 380;
         draw_round_texture(pic, W - 48 - pw, y, pw, ph, 14, 0xFFFFFFFF);
     }
-    text(bold, tx, (int)y + 14, RGBA8(255, 120, 70, 255), 13, "COMMUNITY NEWS  \xC2\xB7  r/vitahacks");
+    char kicker_hdr[64];
+    snprintf(kicker_hdr, sizeof(kicker_hdr), "COMMUNITY NEWS  \xC2\xB7  %s", n->sub[0] ? n->sub : "r/vitahacks");
+    text(bold, tx, (int)y + 14, RGBA8(255, 120, 70, 255), 13, kicker_hdr);
     draw_wrapped_text(n->title, tx, (int)y + 44, tw, 24, 4, C_TEXT);
     int lines = (int)(text_w(bold, 24, n->title) / tw) + 1;
     if (lines > 4) lines = 4;
@@ -451,8 +494,252 @@ static void news_reader(const Input *in) {
         draw_action_button(tx, by, 260, 38, "X See it in the Store", 1, RGBA8(52, 168, 83, 255));
         by += 54;
     } else by += 14;
-    draw_wrapped_text(n->summary[0] ? n->summary : "This post is a link or a picture; open r/vitahacks on a phone to see the rest.",
+    char fallback_summary[128];
+    snprintf(fallback_summary, sizeof(fallback_summary), "This post is a link or a picture; open %s on a phone to see the rest.",
+             n->sub[0] ? n->sub : "Reddit");
+    draw_wrapped_text(n->summary[0] ? n->summary : fallback_summary,
                       tx, (int)by + 6, tw, 16, 14, C_TEXT);
+}
+
+static void draw_weather_glyph(float cx, float cy, int kind, float scale, int anim) {
+    if (!anim) {
+        if (kind == 0) {
+            /* Sun: centered core with 8 crisp rays */
+            vita2d_draw_fill_circle(cx, cy, 9.5f * scale, RGBA8(250, 204, 21, 255));
+            vita2d_draw_fill_circle(cx - 2.0f * scale, cy - 2.0f * scale, 4.5f * scale, RGBA8(254, 240, 138, 200));
+            for (int i = 0; i < 8; ++i) {
+                float ang = i * 0.785398f;
+                float r1 = 12.5f * scale;
+                float r2 = (i % 2 == 0 ? 17.5f : 15.5f) * scale;
+                vita2d_draw_line(cx + cosf(ang) * r1, cy + sinf(ang) * r1,
+                                 cx + cosf(ang) * r2, cy + sinf(ang) * r2, RGBA8(250, 204, 21, 255));
+                vita2d_draw_line(cx + cosf(ang) * r1 + 0.5f, cy + sinf(ang) * r1 + 0.5f,
+                                 cx + cosf(ang) * r2 + 0.5f, cy + sinf(ang) * r2 + 0.5f, RGBA8(250, 204, 21, 255));
+            }
+        } else {
+            /* Centered cloud with seamless integrated puff structure */
+            float cl_y = (kind == 1) ? cy : (cy - 3.5f * scale);
+            unsigned int cloud_col = RGBA8(220, 230, 242, 255);
+            vita2d_draw_fill_circle(cx - 7.5f * scale, cl_y + 1.5f * scale, 7.5f * scale, cloud_col);
+            vita2d_draw_fill_circle(cx + 0.0f * scale, cl_y - 2.0f * scale, 9.5f * scale, cloud_col);
+            vita2d_draw_fill_circle(cx + 7.5f * scale, cl_y + 2.0f * scale, 6.5f * scale, cloud_col);
+            vita2d_draw_rectangle(cx - 7.5f * scale, cl_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, cloud_col);
+            vita2d_draw_fill_circle(cx - 1.0f * scale, cl_y - 3.0f * scale, 6.0f * scale, RGBA8(255, 255, 255, 75));
+
+            if (kind == 2) {
+                /* Rain: 3 clean slanted raindrops */
+                for (int d = -1; d <= 1; ++d) {
+                    float rx = cx + d * 7.5f * scale;
+                    float ry = cl_y + 12.0f * scale;
+                    vita2d_draw_line(rx, ry, rx - 1.5f * scale, ry + 5.0f * scale, RGBA8(96, 165, 250, 255));
+                    vita2d_draw_line(rx + 0.5f, ry, rx - 1.0f * scale, ry + 5.0f * scale, RGBA8(96, 165, 250, 255));
+                }
+            } else if (kind == 3) {
+                /* Snow: 3 delicate snowflakes */
+                for (int d = -1; d <= 1; ++d) {
+                    vita2d_draw_fill_circle(cx + d * 8.0f * scale, cl_y + 13.5f * scale, 2.0f * scale, RGBA8(224, 242, 254, 255));
+                }
+            }
+        }
+        return;
+    }
+
+    /* Animated glyph: 60 FPS hardware accelerated procedural motion */
+    SceUInt64 tick = sceKernelGetProcessTimeWide();
+    float t = (float)(tick % 100000000ull) / 1000000.0f;
+
+    if (kind == 0) {
+        /* Sun: calm, gentle rotation with breathing rays and luminous core */
+        float pulse = sinf(t * 1.8f) * 0.8f * scale;
+        vita2d_draw_fill_circle(cx, cy, 9.5f * scale + pulse, RGBA8(250, 204, 21, 255));
+        /* Inner warm glow highlight */
+        vita2d_draw_fill_circle(cx - 2.0f * scale, cy - 2.0f * scale, 4.5f * scale, RGBA8(254, 240, 138, 220));
+
+        float rot = t * 0.28f;   /* Relaxed, slower rotation */
+        for (int i = 0; i < 8; ++i) {
+            float ang = rot + i * 0.785398f; /* 45 degrees */
+            float r1 = (12.5f + pulse * 0.4f) * scale;
+            float wave = sinf(t * 2.4f + i * 1.1f) * 1.2f;
+            float r2 = ((i % 2 == 0 ? 18.5f : 16.0f) + wave) * scale;
+            float x1 = cx + cosf(ang) * r1, y1 = cy + sinf(ang) * r1;
+            float x2 = cx + cosf(ang) * r2, y2 = cy + sinf(ang) * r2;
+            vita2d_draw_line(x1, y1, x2, y2, RGBA8(250, 204, 21, 255));
+            vita2d_draw_line(x1 + 0.6f, y1 + 0.6f, x2 + 0.6f, y2 + 0.6f, RGBA8(250, 204, 21, 255));
+        }
+    } else {
+        /* Cloud base with gentle harmonic bobbing and floating motion */
+        float cl_base_y = (kind == 1) ? cy : (cy - 3.5f * scale);
+        float dy = sinf(t * 1.8f) * 1.8f * scale;
+        float dx = sinf(t * 1.1f) * 1.2f * scale;
+        float cloud_x = cx + dx;
+        float cloud_y = cl_base_y + dy;
+
+        /* Ambient subtle puff behind for depth - softened to integrate seamlessly */
+        float bg_x = cx - 7.0f * scale - dx * 0.7f;
+        float bg_y = cl_base_y - 4.5f * scale - dy * 0.4f;
+        vita2d_draw_fill_circle(bg_x, bg_y, 6.0f * scale, RGBA8(160, 180, 210, 40));
+        vita2d_draw_fill_circle(bg_x + 5.5f * scale, bg_y - 1.5f * scale, 5.0f * scale, RGBA8(160, 180, 210, 40));
+
+        /* Main floating cloud body - unified color so puffs blend into a smooth seamless shape */
+        unsigned int cloud_col = RGBA8(220, 230, 242, 255);
+        vita2d_draw_fill_circle(cloud_x - 7.5f * scale, cloud_y + 1.5f * scale, 7.5f * scale, cloud_col);
+        vita2d_draw_fill_circle(cloud_x + 0.0f * scale, cloud_y - 2.0f * scale, 9.5f * scale, cloud_col);
+        vita2d_draw_fill_circle(cloud_x + 7.5f * scale, cloud_y + 2.0f * scale, 6.5f * scale, cloud_col);
+        vita2d_draw_rectangle(cloud_x - 7.5f * scale, cloud_y + 3.0f * scale, 15.0f * scale, 5.5f * scale, cloud_col);
+        /* Subtle crest highlight */
+        vita2d_draw_fill_circle(cloud_x - 1.0f * scale, cloud_y - 3.0f * scale, 6.0f * scale, RGBA8(255, 255, 255, 75));
+
+        if (kind == 2) {
+            /* Rain: 4 smooth looping falling raindrops with natural staggered timing */
+            for (int d = 0; d < 4; ++d) {
+                float col_offset = (d - 1.5f) * 6.0f * scale;
+                float speed = (d % 2 == 0) ? 2.8f : 3.4f;
+                float phase = fmodf(t * speed + d * 0.28f, 1.0f);
+                float drop_x = cx + col_offset - phase * 2.0f * scale;
+                float drop_y = cloud_y + (8.0f + phase * 18.0f) * scale;
+                float dlen = (5.0f + (d % 2) * 1.5f) * scale;
+                unsigned int rc = (d % 2 == 0) ? RGBA8(96, 165, 250, 255) : RGBA8(147, 197, 253, 240);
+                vita2d_draw_line(drop_x, drop_y, drop_x - 1.5f * scale, drop_y + dlen, rc);
+                vita2d_draw_line(drop_x + 0.6f, drop_y, drop_x - 0.9f * scale, drop_y + dlen, rc);
+            }
+        } else if (kind == 3) {
+            /* Snow: 4 snowflakes swaying gracefully as they drift downward */
+            for (int d = 0; d < 4; ++d) {
+                float col_offset = (d - 1.5f) * 6.5f * scale;
+                float phase = fmodf(t * 0.85f + d * 0.26f, 1.0f);
+                float sway = sinf(t * 2.4f + d * 1.7f) * 2.5f * scale;
+                float snow_x = cx + col_offset + sway;
+                float snow_y = cloud_y + (8.0f + phase * 18.0f) * scale;
+                float sr = (d % 2 == 0 ? 1.8f : 2.3f) * scale;
+                vita2d_draw_fill_circle(snow_x, snow_y, sr, RGBA8(224, 242, 254, 255));
+                vita2d_draw_fill_circle(snow_x, snow_y, sr * 0.5f, RGBA8(255, 255, 255, 255));
+            }
+        }
+    }
+}
+
+static void weather_modal_draw(const Input *in) {
+    WeatherDay days[4];
+    char town[64] = {0};
+    int f = 0, cur_temp = 0, cur_code = 0;
+    if (!weather_forecast(days, town, &f, &cur_temp, &cur_code)) {
+        weather_modal = 0;
+        return;
+    }
+
+    float px = 130, py = 84, pw = 700, ph = 376, pr = 16;
+
+    if (in->pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_TRIANGLE)) {
+        weather_modal = 0;
+        return;
+    }
+    if (in->pressed & SCE_CTRL_LEFT) {
+        if (forecast_sel > 0) forecast_sel--;
+        else sfx_play(SFX_BUMP);
+    }
+    if (in->pressed & SCE_CTRL_RIGHT) {
+        if (forecast_sel < 3) forecast_sel++;
+        else sfx_play(SFX_BUMP);
+    }
+    if (in->tapped) {
+        if (in->tap_x >= px + pw - 100 && in->tap_x <= px + pw - 14 && in->tap_y >= py + 14 && in->tap_y <= py + 48) {
+            weather_modal = 0;
+            return;
+        }
+        if (in->tap_x < px || in->tap_x > px + pw || in->tap_y < py || in->tap_y > py + ph) {
+            weather_modal = 0;
+            return;
+        }
+        float col_w = 152, gap = 12;
+        float start_cx = px + 24;
+        for (int d = 0; d < 4; ++d) {
+            float cx = start_cx + d * (col_w + gap);
+            if (in->tap_x >= cx && in->tap_x <= cx + col_w && in->tap_y >= py + 164 && in->tap_y <= py + 164 + 192) {
+                forecast_sel = d;
+                break;
+            }
+        }
+    }
+
+    /* Dim the background */
+    vita2d_draw_rectangle(0, 64, W, H - 104, RGBA8(12, 15, 22, 215));
+
+    /* Dialog box */
+    draw_round_rect(px, py, pw, ph, pr, RGBA8(24, 28, 38, 252));
+    draw_round_ring(px, py, pw, ph, pr, 1.5f, RGBA8(255, 255, 255, 30));
+
+    /* Header */
+    text(bold, (int)px + 28, (int)py + 26, C_ACCENT, 13, "4-DAY FORECAST");
+    text(bold, (int)px + 28, (int)py + 54, C_TEXT, 22, town[0] ? town : "Local Weather");
+
+    /* Close hint button */
+    draw_round_rect(px + pw - 94, py + 18, 70, 26, 13, RGBA8(255, 255, 255, 20));
+    int cw = text_w(font, 13, "Close");
+    text(font, (int)px + (int)pw - 94 + (70 - cw) / 2, (int)py + 36, C_DIM, 13, "Close");
+
+
+    /* Top separator */
+    vita2d_draw_rectangle((int)px + 24, (int)py + 66, (int)pw - 48, 1, RGBA8(255, 255, 255, 24));
+
+    /* Current weather hero banner */
+    char tstr[32];
+    snprintf(tstr, sizeof(tstr), "%d\xC2\xB0%c", cur_temp, f ? 'F' : 'C');
+    text(bold, (int)px + 32, (int)py + 118, C_TEXT, 40, tstr);
+    int tw = text_w(bold, 40, tstr);
+
+    int cur_kind = weather_kind(cur_code);
+    draw_weather_glyph(px + 32 + tw + 28, py + 104, cur_kind, 1.3f, 1);
+
+    text(bold, (int)px + 32 + tw + 60, (int)py + 106, C_TEXT, 17, weather_desc(cur_code));
+    char hltxt[64];
+    snprintf(hltxt, sizeof(hltxt), "High %d\xC2\xB0  \xC2\xB7  Low %d\xC2\xB0", days[0].temp_max, days[0].temp_min);
+    text(font, (int)px + 32 + tw + 60, (int)py + 128, C_DIM, 14, hltxt);
+
+    /* Separator before forecast cards */
+    vita2d_draw_rectangle((int)px + 24, (int)py + 152, (int)pw - 48, 1, RGBA8(255, 255, 255, 24));
+
+    /* 4 Forecast day cards */
+    float col_w = 152, col_h = 192, gap = 12;
+    float start_cx = px + 24;
+    float col_y = py + 164;
+    SceDateTime dt;
+    sceRtcGetCurrentClockLocalTime(&dt);
+    int start_dow = sceRtcGetDayOfWeek(dt.year, dt.month, dt.day);
+    static const char *const full_dnames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+    for (int d = 0; d < 4; ++d) {
+        float cx = start_cx + d * (col_w + gap);
+        int on = (d == forecast_sel);
+        if (on) {
+            draw_focus_r(cx, col_y, col_w, col_h, 1.0f, 12);
+            draw_round_rect(cx, col_y, col_w, col_h, 12, RGBA8(38, 79, 140, 180));
+        } else {
+            draw_round_rect(cx, col_y, col_w, col_h, 12, RGBA8(255, 255, 255, 12));
+        }
+
+        char dtitle[32];
+        if (d == 0) snprintf(dtitle, sizeof(dtitle), "Today");
+        else if (d == 1) snprintf(dtitle, sizeof(dtitle), "Tomorrow");
+        else snprintf(dtitle, sizeof(dtitle), "%s", full_dnames[(start_dow + d) % 7]);
+
+        int dtw = text_w(bold, 14, dtitle);
+        text(bold, (int)cx + ((int)col_w - dtw) / 2, (int)col_y + 26, on ? C_TEXT : C_DIM, 14, dtitle);
+
+        int dkind = weather_kind(days[d].code);
+        draw_weather_glyph(cx + col_w / 2.0f, col_y + 68, dkind, 1.40f, on);
+
+        const char *desc = weather_desc(days[d].code);
+        int cw = text_w(font, 13, desc);
+        if (cw > col_w - 16) text_fit(font, (int)cx + 8, (int)col_y + 112, on ? C_TEXT : C_DIM, 13, desc, (int)col_w - 16);
+        else text(font, (int)cx + ((int)col_w - cw) / 2, (int)col_y + 112, on ? C_TEXT : C_DIM, 13, desc);
+
+        char hilotxt[32];
+        snprintf(hilotxt, sizeof(hilotxt), "%d\xC2\xB0 / %d\xC2\xB0", days[d].temp_max, days[d].temp_min);
+        int hlw = text_w(bold, 17, hilotxt);
+        text(bold, (int)cx + ((int)col_w - hlw) / 2, (int)col_y + 152, C_TEXT, 17, hilotxt);
+        int subw = text_w(font, 12, "High / Low");
+        text(font, (int)cx + ((int)col_w - subw) / 2, (int)col_y + 172, on ? C_TEXT : C_FAINT, 12, "High / Low");
+    }
 }
 
 void hometab_update(const Input *in) {
@@ -476,36 +763,60 @@ void hometab_update(const Input *in) {
                 }
                 break;
             }
-    if (in->pressed || in->tapped || in->touching) player_moved = 1;
-    if (!player_moved) {
-        sel = 0;
-        for (int i = 0; i < nitems; ++i) if (items[i].kind == K_GAME) { sel = i; break; }
-    }
-    if (sel >= nitems) sel = nitems - 1;
-    if (in->pressed & SCE_CTRL_LEFT) { if (sel > 0) sel--; else sfx_play(SFX_BUMP); }
-    if (in->pressed & SCE_CTRL_RIGHT) { if (sel < nitems - 1) sel++; else sfx_play(SFX_BUMP); }
-    if (in->tapped && in->tap_y > ROW_Y - 20 && in->tap_y < ROW_Y + TILE + 30) {
-        int i = (int)((in->tap_x - 48 + (pos - (int)pos) * (TILE + GAP)) / (TILE + GAP)) + (int)pos;
-        if (i >= 0 && i < nitems) {
-            if (i == sel) goto act;
-            sel = i;
+    if (!weather_modal) {
+        if (in->pressed || in->tapped || in->touching) player_moved = 1;
+        if (!player_moved) {
+            sel = 0;
+            for (int i = 0; i < nitems; ++i) if (items[i].kind == K_GAME) { sel = i; break; }
+        }
+        if (sel >= nitems) sel = nitems - 1;
+
+        /* Touch tap on weather widget */
+        if (in->tapped && weather_place()[0] && in->tap_x >= 664 && in->tap_x <= 936 && in->tap_y >= 186 && in->tap_y <= 236) {
+            weather_modal = 1;
+            forecast_sel = 0;
+            focus_widget = 0;
+        }
+
+        /* D-Pad UP from tiles to focus weather widget */
+        if (!focus_widget && (in->pressed & SCE_CTRL_UP) && weather_place()[0]) {
+            focus_widget = 1;
+        } else if (focus_widget) {
+            if (in->pressed & (SCE_CTRL_DOWN | SCE_CTRL_CIRCLE | SCE_CTRL_LEFT | SCE_CTRL_RIGHT)) {
+                focus_widget = 0;
+            } else if (in->pressed & SCE_CTRL_CROSS) {
+                weather_modal = 1;
+                forecast_sel = 0;
+                focus_widget = 0;
+            }
+        }
+
+        if (!focus_widget) {
+            if (in->pressed & SCE_CTRL_LEFT) { if (sel > 0) sel--; else sfx_play(SFX_BUMP); }
+            if (in->pressed & SCE_CTRL_RIGHT) { if (sel < nitems - 1) sel++; else sfx_play(SFX_BUMP); }
+            if (in->tapped && in->tap_y > ROW_Y - 20 && in->tap_y < ROW_Y + TILE + 30) {
+                int i = (int)((in->tap_x - 48 + (pos - (int)pos) * (TILE + GAP)) / (TILE + GAP)) + (int)pos;
+                if (i >= 0 && i < nitems) {
+                    if (i == sel) goto act;
+                    sel = i;
+                }
+            }
+            if (in->touching && in->drag_dx && in->ty > ROW_Y - 20 && in->ty < ROW_Y + TILE + 30) swiping = 1;
+            if (swiping) {
+                pos -= in->drag_dx / (float)(TILE + GAP);
+                if (pos < -0.5f) pos = -0.5f;
+                if (pos > nitems - 0.5f) pos = nitems - 0.5f;
+                if (!in->touching) {
+                    int t0 = sel > 2 ? sel - 2 : 0, ns = (int)(pos + 0.5f) + (sel - t0);
+                    sel = ns < 0 ? 0 : ns >= nitems ? nitems - 1 : ns;
+                    swiping = 0;
+                }
+            }
+            if (in->pressed & SCE_CTRL_CROSS) goto act;
         }
     }
-    /* A swipe along the row scrolls it; letting go picks the tile that is now
-     * where the focused one was (playtest 2026-09-25: it would not swipe). */
-    if (in->touching && in->drag_dx && in->ty > ROW_Y - 20 && in->ty < ROW_Y + TILE + 30) swiping = 1;
-    if (swiping) {
-        pos -= in->drag_dx / (float)(TILE + GAP);
-        if (pos < -0.5f) pos = -0.5f;
-        if (pos > nitems - 0.5f) pos = nitems - 0.5f;
-        if (!in->touching) {
-            int t0 = sel > 2 ? sel - 2 : 0, ns = (int)(pos + 0.5f) + (sel - t0);
-            sel = ns < 0 ? 0 : ns >= nitems ? nitems - 1 : ns;
-            swiping = 0;
-        }
-    }
-    if (in->pressed & SCE_CTRL_CROSS) goto act;
     goto draw;
+
 act: {
         Item *it = &items[sel];
         if (it->kind == K_GAME) {
@@ -613,4 +924,6 @@ draw:
         }
         if (i == sel) text_fit(bold, (int)tx, (int)(ROW_Y + TILE + 34), C_TEXT, 16, t->title, 300);
     }
+    if (weather_modal) weather_modal_draw(in);
 }
+
